@@ -1,3 +1,6 @@
 [submodule "thirdparty/flex"]
 	path = thirdparty/flex
 	url = https://github.com/westes/flex.git
+[submodule "thirdparty/pcre"]
+	path = thirdparty/pcre
+	url = https://github.com/rurban/pcre
