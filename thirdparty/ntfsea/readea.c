@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <windows.h>
+#include <inttypes.h>
 #include "ntfsea.h"
 
 int main(int argc, char *argv[])
@@ -12,7 +13,8 @@ int main(int argc, char *argv[])
     if (eaList) {
 	printf("List %d\n", eaList->ListSize);
 	for (int i = 0; i < eaList->ListSize; i++) {
-	    printf("%s\n", eaList->List[i].Name);
+	    uint32_t *val = (uint32_t *)eaList->List[i].Value;
+	    printf("%s [%d] %d\n", eaList->List[i].Name, eaList->List[i].ValueLength, *val);
 	}
     } else {
 	printf("No list :(\n");
