@@ -1,24 +1,58 @@
 #!/bin/bash
 
-set +e
+set -e
+
+MAKEARGS=-j9
 
 TOP=$PWD
 
-cd thirdparty/pcre
-./autogen.sh
+TARGET=i686-w64-mingw32
 
-cd $TOP/flex
-./autogen.sh
+if test ! -e $TOP/thirdparty/pcre/configure; then
+    cd $TOP/thirdparty/pcre
+    ./autogen.sh
+fi
 
-cd $TOP/thirdparty/oncrpc-ms-code
-./bootstrap
+if test ! -e $TOP/thirdparty/flex/configure; then
+    cd $TOP/thirdparty/flex
+    ./autogen.sh
+fi
 
-cd $TOP
+if test ! -e $TOP/thirdparty/oncrpc-ms-code/configure; then
+    cd $TOP/thirdparty/oncrpc-ms-code
+    ./bootstrap
+fi
 
-mkdir build
-cd build
-mkdir pcre
-cd pcre
+if test ! -e $TOP/configure; then
+    cd $TOP
+    ./bootstrap
+fi
 
-../../thirdparty/configure --host=i686-w64-mingw32 --prefix=$TOP/build
+mkdir -p $TOP/build/pcre
+cd $TOP/build/pcre
 
+../../thirdparty/pcre/configure --host=$TARGET --prefix=$TOP/build
+make $MAKEARGS && make install
+
+ln -sf pcre2posix.h $TOP/build/include/regex.h
+
+mkdir -p $TOP/build/flex
+cd $TOP/build/flex
+
+../../thirdparty/flex/configure --host=$TARGET -prefix=$TOP/build CPPFLAGS="-I$TOP/build/include" LDFLAGS="-L$TOP/build/lib"
+make $MAKEARGS libfl && make install-libfl
+
+mkdir -p $TOP/build/oncrpc-ms-code
+cd $TOP/build/oncrpc-ms-code
+
+../../thirdparty/oncrpc-ms-code/configure  --host=$TARGET -prefix=$TOP/build CPPFLAGS="-I$TOP/build/include" LDFLAGS="-L$TOP/build/lib"
+make $MAKEARGS && make install
+
+mkdir -p $TOP/build/unfs3
+cd $TOP/build/unfs3
+
+../../configure --host=$TARGET -prefix=$TOP/build CFLAGS="-I$TOP/build/include" LDFLAGS="-L$TOP/build/lib -static-libgcc"
+
+make && make install
+
+echo "done"

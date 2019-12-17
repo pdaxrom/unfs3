@@ -8,6 +8,14 @@ AC_PROG_LEX
 AS_IF([test "x$LEX" == "x:"], [
   AC_MSG_ERROR([flex or lex missing.])
 ])
+
+case $host in
+  *mingw* )
+    CFLAGS="$CFLAGS -DONCRPCDLL"
+    LIBS="$LIBS -loncrpc -lwsock32"
+    ;;
+esac
+
 AC_PROG_YACC
 AC_HEADER_STDC
 AC_SYS_LARGEFILE

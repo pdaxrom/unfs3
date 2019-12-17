@@ -1,0 +1,53 @@
+diff --git a/configure.ac b/configure.ac
+index 9c53590..f9e1e6c 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -119,8 +119,17 @@ AC_PATH_PROG([INDENT], indent, [\${top_srcdir}/build-aux/missing indent])
+ 
+ # checks for headers
+ 
++case $host_os in
++  mingw* )
++AC_CHECK_HEADERS([regex.h strings.h sys/stat.h unistd.h], [],
++  [AC_MSG_ERROR(required header not found on your system)])
++    ;;
++  *)
+ AC_CHECK_HEADERS([regex.h strings.h sys/stat.h sys/wait.h unistd.h], [],
+   [AC_MSG_ERROR(required header not found on your system)])
++    ;;
++esac
++
+ 
+ AC_CHECK_HEADERS([inttypes.h libintl.h limits.h locale.h malloc.h netinet/in.h])
+ 
+@@ -162,8 +171,16 @@ dnl Autoheader (<= 2.69) bug: "dnl" comments in a quoted argument of
+ dnl AC_CHECK_FUNCS will expand wierdly in config.h.in.
+ dnl (https://lists.gnu.org/archive/html/bug-autoconf/2018-02/msg00005.html)
+ 
++case $host_os in
++  mingw* )
++AC_CHECK_FUNCS([dup2 memset strcasecmp strchr strdup strtol], [],
++  [AC_MSG_ERROR(required library function not found on your system)])
++    ;;
++  *)
+ AC_CHECK_FUNCS([dup2 memset regcomp strcasecmp strchr strdup strtol], [],
+   [AC_MSG_ERROR(required library function not found on your system)])
++    ;;
++esac
+ 
+ # Optional library functions:
+ # pow - Used only by "examples/manual/expr".
+diff --git a/src/flexdef.h b/src/flexdef.h
+index a48c64d..dd7bcf5 100644
+--- a/src/flexdef.h
++++ b/src/flexdef.h
+@@ -67,7 +67,9 @@
+ /* Required: stat() in <sys/stat.h> */
+ #include <sys/stat.h>
+ /* Required: wait() in <sys/wait.h> */
++#ifdef HAVE_SYS_WAIT_H
+ #include <sys/wait.h>
++#endif
+ #include <stdbool.h>
+ #include <stdarg.h>
+ /* Required: regcomp(), regexec() and regerror() in <regex.h> */
