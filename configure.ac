@@ -12,7 +12,7 @@ AS_IF([test "x$LEX" == "x:"], [
 case $host in
   *mingw* )
     CFLAGS="$CFLAGS -DONCRPCDLL"
-    LIBS="$LIBS -loncrpc -lwsock32"
+    LIBS="$LIBS -loncrpc -lwsock32 -lntdll"
     ;;
 esac
 

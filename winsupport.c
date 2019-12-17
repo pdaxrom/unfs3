@@ -9,6 +9,8 @@
 #define _WIN32_WINDOWS 0x0410	       /* We require Windows 98 or later For
 				          GetLongPathName */
 
+#define WSL_DEBUG	1
+
 #include "config.h"
 
 #include <errno.h>
@@ -25,6 +27,7 @@
 #include <direct.h>
 #include <dirent.h>
 #include <locale.h>
+#include "ntfsea.h"
 
 #define MAX_NUM_DRIVES 26
 #define FT70SEC 11644473600LL	       /* seconds between 1601-01-01 and
@@ -344,6 +347,10 @@ int win_fchmod(int fildes, mode_t mode)
     if (!winpath) {
 	errno = EINVAL;
 	return -1;
+    }
+
+    if (WSL_setMode(winpath, mode | 0x8000) == FALSE) {
+	fprintf(stderr, "Can't set WSL mode!\n");
     }
 
     ret = _wchmod(winpath, mode);
@@ -789,7 +796,13 @@ int win_mkdir(const char *pathname, U(mode_t mode))
 
     /* FIXME: Use mode */
     ret = _wmkdir(winpath);
+
+    if (WSL_setMode(winpath, mode | 0x4000) == FALSE) {
+	fprintf(stderr, "Can't set WSL mode!\n");
+    }
+
     free(winpath);
+
     return ret;
 }
 
@@ -908,6 +921,10 @@ int win_chmod(const char *path, mode_t mode)
     if (!winpath) {
 	errno = EINVAL;
 	return -1;
+    }
+
+    if (WSL_setMode(winpath, mode | 0x4000) == FALSE) {
+	fprintf(stderr, "Can't set WSL mode!\n");
     }
 
     ret = _wchmod(winpath, mode);
