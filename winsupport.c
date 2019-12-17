@@ -480,6 +480,7 @@ int win_stat(const char *file_name, backend_statstruct * buf)
     char savedchar;
     struct _stati64 win_statbuf;
     unsigned long long fti;
+    mode_t wsl_mode;
 
     /* Special case: Our top-level virtual root, containing each drive
        represented as a directory. Compare with "My Computer" etc. This
@@ -519,8 +520,12 @@ int win_stat(const char *file_name, backend_statstruct * buf)
 	return ret;
     }
 
-    /* Copy values to our struct */
-    buf->st_mode = win_statbuf.st_mode;
+    if (WSL_getMode(winpath, &wsl_mode)) {
+	buf->st_mode = (wsl_mode & 0x1ff) | (win_statbuf.st_mode & (~0x1ff));
+    } else {
+	/* Copy values to our struct */
+	buf->st_mode = (win_statbuf.st_mode & (~0077)) | ((win_statbuf.st_mode & S_IFDIR)?0055:0044);
+    }
     buf->st_nlink = win_statbuf.st_nlink;
     buf->st_uid = win_statbuf.st_uid;
     buf->st_gid = win_statbuf.st_gid;

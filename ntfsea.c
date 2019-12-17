@@ -96,7 +96,7 @@ HANDLE GetFileHandle(PWSTR DosFileName, BOOL Write, PFILE_FULL_EA_INFORMATION Ea
  *
  * \param FileName Path to the file in wide-string format.
  *
- * \return List of extended attributes or an empty list on error.
+ * \return List of extended attributes or NULL on error.
  */
 DLL_EXPORT struct EaList* GetEaList(PWSTR FileName)
 {
@@ -111,7 +111,8 @@ DLL_EXPORT struct EaList* GetEaList(PWSTR FileName)
 	FileHandle = GetFileHandle(FileName, FALSE, NULL, 0);
 	if (FileHandle == NULL)
 	{
-		return Result;
+		free(Result);
+		return NULL;
 	}
 
 	do
@@ -122,7 +123,8 @@ DLL_EXPORT struct EaList* GetEaList(PWSTR FileName)
 		if (Status != STATUS_SUCCESS && Status != STATUS_BUFFER_OVERFLOW)
 		{
 			NtClose(FileHandle);
-			return Result;
+			free(Result);
+			return NULL;
 		}
 
 		while (EaBuffer)
@@ -155,7 +157,7 @@ DLL_EXPORT struct EaList* GetEaList(PWSTR FileName)
  * \param FileName Path to the file in wide-string format.
  * \param EaName   Name of the extended attribute in a null-terminated string.
  *
- * \return Extended attribute information or empty structure on error.
+ * \return Extended attribute information or NULL on error.
  */
 DLL_EXPORT struct Ea* GetEa(PWSTR FileName, PSTR EaName)
 {
@@ -174,7 +176,8 @@ DLL_EXPORT struct Ea* GetEa(PWSTR FileName, PSTR EaName)
 	FileHandle = GetFileHandle(FileName, FALSE, NULL, 0);
 	if (FileHandle == NULL)
 	{
-		return Result;
+		free(Result);
+		return NULL;
 	}
 
 	EaNameLength = (ULONG)((EaNameLength + 1) * sizeof(CHAR));
@@ -191,7 +194,8 @@ DLL_EXPORT struct Ea* GetEa(PWSTR FileName, PSTR EaName)
 	if (Status != STATUS_SUCCESS)
 	{
 		NtClose(FileHandle);
-		return Result;
+		free(Result);
+		return NULL;
 	}
 
 	if (EaBuffer && EaBuffer->EaValueLength > 0)
@@ -199,6 +203,9 @@ DLL_EXPORT struct Ea* GetEa(PWSTR FileName, PSTR EaName)
 		strcpy_s(Result->Name, MAX_EA_VALUE, EaBuffer->EaName);
 		memcpy_s(Result->Value, MAX_EA_VALUE, EaBuffer->EaName + EaBuffer->EaNameLength + 1, EaBuffer->EaValueLength);
 		Result->ValueLength = EaBuffer->EaValueLength;
+	} else {
+		free(Result);
+		Result = NULL;
 	}
 
 	NtClose(FileHandle);
@@ -271,6 +278,7 @@ BOOL WSL_getMode(PWSTR FileName, mode_t *Mode)
     }
     uint32_t *ptr = (uint32_t *)ea->Value;
     *Mode = *ptr;
+    free(ea);
     return TRUE;
 }
 
