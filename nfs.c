@@ -244,13 +244,13 @@ ACCESS3res *nfsproc3_access_3_svc(ACCESS3args * argp, struct svc_req * rqstp)
     post = get_post_cached(rqstp);
     mode = post.post_op_attr_u.attributes.mode;
 
-    if (access(path, R_OK) != -1)
+    if (backend_access(path, R_OK) != -1)
         newaccess |= ACCESS3_READ;
 
-    if (access(path, W_OK) != -1)
+    if (backend_access(path, W_OK) != -1)
         newaccess |= ACCESS3_MODIFY | ACCESS3_EXTEND;
 
-    if (access(path, X_OK) != -1) {
+    if (backend_access(path, X_OK) != -1) {
         newaccess |= ACCESS3_EXECUTE;
         if (opt_readable_executables)
             newaccess |= ACCESS3_READ;
