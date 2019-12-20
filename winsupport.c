@@ -28,6 +28,7 @@
 #include <dirent.h>
 #include <locale.h>
 #include "ntfsea.h"
+#include "winlinks.h"
 
 #define MAX_NUM_DRIVES 26
 #define FT70SEC 11644473600LL	       /* seconds between 1601-01-01 and
@@ -160,6 +161,54 @@ static int isLegalUTF8(const unsigned char *source, int length)
     unsigned char a;
     const unsigned char *srcptr = source + length;
 
+#if 0
+    switch (length) {
+	default:
+	    return 0;
+	    /* Everything else falls through when "1"... */
+
+    if (length == 4) {
+	if ((a = (*--srcptr)) < 0x80 || a > 0xBF) {
+	    return 0;
+	}
+    }
+
+    if (length >= 3) {
+	if ((a = (*--srcptr)) < 0x80 || a > 0xBF) {
+	    return 0;
+	}
+    }
+
+    if (length >= 2) {
+	if ((a = (*--srcptr)) > 0xBF) {
+	    return 0;
+	}
+
+	switch (*source) {
+	    /* no fall-through in this inner switch */
+	case 0xE0:
+	    if (a < 0xA0) return 0;
+	    break;
+	case 0xED:
+	    if (a > 0x9F) return 0;
+	    break;
+	case 0xF0:
+	    if (a < 0x90) return 0;
+	    break;
+	case 0xF4:
+	    if (a > 0x8F) return 0;
+	    break;
+	default:
+	    if (a < 0x80) return 0;
+	}
+    }
+
+    if (length >= 1)
+	if (*source >= 0x80 && *source < 0xC2) {
+		return 0;
+	}
+    }
+#else
     switch (length) {
 	default:
 	    return 0;
@@ -201,6 +250,7 @@ static int isLegalUTF8(const unsigned char *source, int length)
 	    if (*source >= 0x80 && *source < 0xC2)
 		return 0;
     }
+#endif
     if (*source > 0xF4)
 	return 0;
     return 1;
@@ -213,7 +263,7 @@ int isLegalUTF8String(const unsigned char *source)
     const unsigned char *seq, *sourceend;
     int seqlen;
 
-    sourceend = source + strlen(source);
+    sourceend = source + strlen((char *)source);
     seq = source;
 
     while (seq < sourceend) {
@@ -240,7 +290,7 @@ static wchar_t *intpath2winpath(const char *intpath)
     /* Verify that input is valid UTF-8. We cannot use MB_ERR_INVALID_CHARS
        to MultiByteToWideChar, since it's only available in late versions of
        Windows. */
-    if (!isLegalUTF8String(intpath)) {
+    if (!isLegalUTF8String((unsigned char *)intpath)) {
 	logmsg(LOG_CRIT, "intpath2winpath: Illegal UTF-8 string:%s", intpath);
 	return NULL;
     }
@@ -448,7 +498,7 @@ void win_shutdown()
     WSACleanup();
 }
 
-/* Wrapper for Windows stat function, which provides
+/* Wrapper for Windows stat/lstat function, which provides
    st_dev and st_ino. These are calculated as follows:
 
    st_dev is set to the drive number (0=A 1=B ...). Our virtual root
@@ -462,14 +512,17 @@ void win_shutdown()
    enhancement.
 
    pigeon() can be calculated in Python with:
-   
+
    def pigeon(m, n):
        res = 1.0
        for i in range(m - n + 1, m):
            res = res * i / m
        return 1 - res
+
+   l_mode = 0 for stat, 1 for lstat
 */
-int win_stat(const char *file_name, backend_statstruct * buf)
+#include <shlwapi.h>
+static int priv_stat(const char *file_name, backend_statstruct *buf, int l_mode)
 {
     wchar_t *winpath;
     int ret;
@@ -480,7 +533,7 @@ int win_stat(const char *file_name, backend_statstruct * buf)
     char savedchar;
     struct _stati64 win_statbuf;
     unsigned long long fti;
-    mode_t wsl_mode;
+    mode_t wsl_mode = 0;
 
     /* Special case: Our top-level virtual root, containing each drive
        represented as a directory. Compare with "My Computer" etc. This
@@ -520,17 +573,33 @@ int win_stat(const char *file_name, backend_statstruct * buf)
 	return ret;
     }
 
-    if (WSL_getMode(winpath, &wsl_mode)) {
-	buf->st_mode = (wsl_mode & 0x1ff) | (win_statbuf.st_mode & (~0x1ff));
+    wchar_t target[PATH_MAX];
+    int target_size;
+
+    target_size = ReadLinkW(winpath, target, sizeof(target));
+    if (target_size != -1) {
+	target[target_size / sizeof(wchar_t)] = 0;
+	buf->st_mode = S_IFLNK | S_IRWXU | S_IRWXG | S_IRWXO;
     } else {
-	/* Copy values to our struct */
-	buf->st_mode = (win_statbuf.st_mode & (~0077)) | ((win_statbuf.st_mode & S_IFDIR)?0055:0044);
+	if (WSL_getMode(winpath, &wsl_mode)) {
+	    buf->st_mode = (wsl_mode & ~S_IFMT) | (win_statbuf.st_mode & S_IFMT); //(wsl_mode & 0x1ff) | (win_statbuf.st_mode & (~0x1ff));
+	} else {
+	    buf->st_mode = (win_statbuf.st_mode & ~(S_IRWXG | S_IRWXO)) |
+				((win_statbuf.st_mode & S_IFDIR)?(S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH):(S_IXUSR | S_IRGRP | S_IROTH));
+	}
     }
+
     buf->st_nlink = win_statbuf.st_nlink;
     buf->st_uid = win_statbuf.st_uid;
     buf->st_gid = win_statbuf.st_gid;
     buf->st_rdev = win_statbuf.st_rdev;
-    buf->st_size = win_statbuf.st_size;
+
+    if (l_mode && target_size != -1) {
+	buf->st_size = WideCharToMultiByte(CP_UTF8, 0, target, target_size / sizeof(wchar_t), NULL, 0, NULL, NULL);
+    } else {
+	buf->st_size = win_statbuf.st_size;
+    }
+
     buf->st_blocks = win_statbuf.st_size / 512;
 
     /* Windows miscalculates DST sometimes in stat() calls, so we need
@@ -641,6 +710,16 @@ int win_stat(const char *file_name, backend_statstruct * buf)
 #endif
     free(winpath);
     return ret;
+}
+
+int win_stat(const char *file_name, backend_statstruct * buf)
+{
+    return priv_stat(file_name, buf, 0);
+}
+
+int win_lstat(const char *file_name, backend_statstruct * buf)
+{
+    return priv_stat(file_name, buf, 1);
 }
 
 int win_open(const char *pathname, int flags, ...)
@@ -778,8 +857,38 @@ char *win_realpath(const char *path, char *resolved_path)
 
 int win_readlink(U(const char *path), U(char *buf), U(size_t bufsiz))
 {
-    errno = ENOSYS;
-    return -1;
+    wchar_t target[PATH_MAX];
+    int target_size = -1;
+
+fprintf(stderr, "readlink %s\n", path);
+
+    wchar_t *winpath = intpath2winpath(path);
+    if (!winpath) {
+	errno = EINVAL;
+	return -1;
+    }
+
+wprintf(L"readlink %s\n", winpath);
+
+    target_size = ReadLinkW(winpath, target, sizeof(target));
+
+    if (target_size > 0) {
+	for (unsigned int i = 0; i < (target_size / sizeof(wchar_t)); i++) {
+	    if (target[i] == '\\') {
+		target[i] = '/';
+	    }
+	}
+	// get size in utf-8
+	target_size = WideCharToMultiByte(CP_UTF8, 0, target, target_size / sizeof(wchar_t), buf, bufsiz, NULL, NULL);
+    }
+
+    if (target_size == 0) {
+	target_size = -1;
+    }
+
+    free(winpath);
+
+    return target_size;
 }
 
 int win_mkdir(const char *pathname, U(mode_t mode))
@@ -1042,7 +1151,7 @@ int win_gen_nonce(char *nonce)
 	return -1;
     }
 
-    if (!CryptGenRandom(hCryptProv, 32, nonce)) {
+    if (!CryptGenRandom(hCryptProv, 32, (unsigned char *)nonce)) {
 	logmsg(LOG_ERR, "CryptGenRandom failed with error 0x%lx",
 	       GetLastError());
 	return -1;
@@ -1064,11 +1173,11 @@ int win_utf8ncasecmp(const char *s1, const char *s2, size_t n)
     int converted;
 
     /* Make sure input is valid UTF-8 */
-    if (!isLegalUTF8String(s1)) {
+    if (!isLegalUTF8String((unsigned char *)s1)) {
 	logmsg(LOG_CRIT, "win_utf8ncasecmp: Illegal UTF-8 string:%s", s1);
 	return -1;
     }
-    if (!isLegalUTF8String(s2)) {
+    if (!isLegalUTF8String((unsigned char *)s2)) {
 	logmsg(LOG_CRIT, "win_utf8ncasecmp: Illegal UTF-8 string:%s", s2);
 	return -1;
     }
@@ -1089,6 +1198,45 @@ int win_utf8ncasecmp(const char *s1, const char *s2, size_t n)
 
     /* compare */
     return _wcsicmp(ws1, ws2);
+}
+
+int win_access(const char *path, int mode)
+{
+    int ret = -1;
+    mode_t f_mode;
+    wchar_t *winpath;
+
+    winpath = intpath2winpath(path);
+    if (!winpath) {
+	errno = EINVAL;
+	return -1;
+    }
+
+    DWORD attr = GetFileAttributesW(winpath);
+    if (attr == INVALID_FILE_ATTRIBUTES) {
+	free(winpath);
+	errno = EACCES;
+	return -1;
+    }
+
+    if (!WSL_getMode(winpath, &f_mode)) {
+	f_mode = (attr & FILE_ATTRIBUTE_DIRECTORY)?
+		(S_IRUSR | S_IXUSR | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH):
+		(S_IRUSR | S_IXUSR | S_IRGRP | S_IROTH);
+	f_mode |= (attr & FILE_ATTRIBUTE_READONLY)?0:S_IWUSR;
+    }
+
+    if (mode == F_OK) {
+	ret = 0;
+    } else {
+	ret  = (mode & X_OK) && (!(f_mode & (S_IXUSR | S_IXGRP)));
+	ret |= (mode & R_OK) && (!(f_mode & (S_IRUSR | S_IRGRP)));
+	ret |= (mode & W_OK) && (!(f_mode & (S_IWUSR | S_IWGRP)));
+	ret = ret?-1:0;
+    };
+
+    free(winpath);
+    return ret;
 }
 
 #endif				       /* WIN32 */

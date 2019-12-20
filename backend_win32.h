@@ -40,7 +40,7 @@
 #define backend_lchown win_chown
 #define backend_link win_link
 #define backend_lseek lseek
-#define backend_lstat win_stat
+#define backend_lstat win_lstat
 #define backend_mkdir win_mkdir
 #define backend_mkfifo win_mkfifo
 #define backend_mknod win_mknod
@@ -65,7 +65,8 @@
 #define backend_utime win_utime
 #define backend_init win_init
 #define backend_dirstream UNFS3_WIN_DIR
-#define backend_fsinfo_properties FSF3_HOMOGENEOUS | FSF3_CANSETTIME;
+#define backend_fsinfo_properties /*FSF3_LINK |*/ FSF3_SYMLINK | FSF3_HOMOGENEOUS | FSF3_CANSETTIME;
+//#define backend_fsinfo_properties FSF3_HOMOGENEOUS | FSF3_CANSETTIME;
 /*
   Note: FAT has different granularities for different times: 1 day for
   atime, 2 seconds for mtime and 10ms för CreationTime. time_delta
@@ -77,5 +78,6 @@
 #define backend_gen_nonce win_gen_nonce
 #define backend_flock flock(fd, op) (-1)
 #define backend_getpid getpid
+#define backend_access win_access
 
 #endif

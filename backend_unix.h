@@ -72,6 +72,7 @@
 #define backend_gen_nonce gen_nonce
 #define backend_flock flock
 #define backend_getpid getpid
+#define backend_access access
 
 #if HAVE_LCHOWN == 1
 #define backend_lchown lchown
