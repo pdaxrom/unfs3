@@ -1,10 +1,16 @@
 #ifdef WIN32
+#define _WIN32_WINNT	0x600
+
 #include "config.h"
 #include "daemon.h"
 #include "winsupport.h"
 #include <windows.h>
 #include <ntdef.h>
+#include <shlwapi.h>
+#include <winbase.h>
 #include <stdio.h>
+#include <errno.h>
+#include "winlinks.h"
 
 ssize_t ReadLinkW(const wchar_t * pathname, wchar_t * buf, size_t bufsiz)
 {
@@ -71,9 +77,60 @@ ssize_t ReadLinkW(const wchar_t * pathname, wchar_t * buf, size_t bufsiz)
     return path_len;
 }
 
-int SymLinkW(const wchar_t * target, const wchar_t * linkpath)
+int SymLinkW(const wchar_t * target, const wchar_t * linkpath, uint32_t mode, const char *origtarget)
 {
-    return -1;
+    int ret = -1;
+
+    if (mode & SYMLINK_JUNCPOINT) {
+//	wchar_t juncpath[wcslen(linkpath) + 1];
+//	wcscpy(juncpath, L"\\??\\");
+//	wcscpy(&juncpath[4], linkpath);
+//wprintf(L"Juntion req %s\n", juncpath);
+
+	HANDLE hFile = CreateFileW(linkpath,
+				   GENERIC_WRITE,
+				   0,
+				   NULL,
+				   CREATE_NEW,
+				   FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+				   NULL);
+
+	if (hFile == INVALID_HANDLE_VALUE) {
+	    logmsg(LOG_ERR, "%s: Could not open file (error %ld)", __func__, GetLastError());
+	    errno = EACCES;
+	} else {
+	    DWORD returned_bytes;
+	    REPARSE_DATA_BUFFER *rep_data;
+	    int rep_length = REPARSE_DATA_BUFFER_HEADER_SIZE +
+		sizeof(rep_data->GenericReparseBuffer) - sizeof(rep_data->GenericReparseBuffer.DataBuffer) +
+		4 + strlen(origtarget);
+	    rep_data = alloca(rep_length);
+	    rep_data->ReparseTag = 0xA000001D;
+	    rep_data->ReparseDataLength = 4 + strlen(origtarget);
+	    *((DWORD *) &rep_data->GenericReparseBuffer.DataBuffer[0]) = 0x00000002;
+	    memcpy(&(rep_data->GenericReparseBuffer.DataBuffer)[4], origtarget, strlen(origtarget));
+	
+	    if (DeviceIoControl(hFile, FSCTL_SET_REPARSE_POINT, rep_data, rep_length, NULL, 0, &returned_bytes, NULL)) {
+		ret = 0;
+	    } else {
+		logmsg(LOG_ERR, "%s: DeviceIoControl (error %ld)", __func__, GetLastError());
+		errno = EIO;
+	    }
+
+	    CloseHandle(hFile);
+	}
+    } else {
+	if (CreateSymbolicLinkW(linkpath,
+				target,
+				SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE |
+				    ((mode & SYMLINK_DIRECTORY)?SYMBOLIC_LINK_FLAG_DIRECTORY:0))) {
+	    ret = 0;
+	} else {
+	    errno = EIO;
+	}
+    }
+
+    return ret;
 }
 
 #ifdef READLINK_TEST

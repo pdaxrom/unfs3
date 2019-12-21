@@ -6,10 +6,7 @@
  */
 
 #ifdef WIN32
-#define _WIN32_WINDOWS 0x0410	       /* We require Windows 98 or later For
-				          GetLongPathName */
-
-#define WSL_DEBUG	1
+#define _WIN32_WINNT	0x600
 
 #include "config.h"
 
@@ -21,6 +18,7 @@
 #include <assert.h>
 #include <windows.h>
 #include <wincrypt.h>
+#include <shlwapi.h>
 #include <ctype.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -320,7 +318,7 @@ static wchar_t *intpath2winpath(const char *intpath)
     /* If path ends with /.., chop of the last component. Eventually, we
        might want to eliminate all occurances of .. */
     lastslash = wcsrchr(winpath, '/');
-    if (!wcscmp(lastslash, L"/..")) {
+    if (lastslash && !wcscmp(lastslash, L"/..")) {
 	*lastslash = '\0';
 	lastslash = wcsrchr(winpath, '/');
 	*lastslash = '\0';
@@ -521,7 +519,6 @@ void win_shutdown()
 
    l_mode = 0 for stat, 1 for lstat
 */
-#include <shlwapi.h>
 static int priv_stat(const char *file_name, backend_statstruct *buf, int l_mode)
 {
     wchar_t *winpath;
@@ -855,7 +852,7 @@ char *win_realpath(const char *path, char *resolved_path)
     return normpath(path, resolved_path);
 }
 
-int win_readlink(U(const char *path), U(char *buf), U(size_t bufsiz))
+int win_readlink(const char *path, char *buf, size_t bufsiz)
 {
     wchar_t target[PATH_MAX];
     int target_size = -1;
@@ -891,7 +888,7 @@ wprintf(L"readlink %s\n", winpath);
     return target_size;
 }
 
-int win_mkdir(const char *pathname, U(mode_t mode))
+int win_mkdir(const char *pathname, mode_t mode)
 {
     wchar_t *winpath;
     int ret;
@@ -920,10 +917,63 @@ int win_mkdir(const char *pathname, U(mode_t mode))
     return ret;
 }
 
-int win_symlink(U(const char *oldpath), U(const char *newpath))
+int win_symlink(const char *oldpath, const char *newpath)
 {
-    errno = ENOSYS;
-    return -1;
+    int ret = -1;
+
+    wchar_t *winoldpath = intpath2winpath(oldpath);
+    if (!winoldpath) {
+	errno = EINVAL;
+	return -1;
+    }
+
+    wchar_t *winnewpath = intpath2winpath(newpath);
+    if (!winnewpath) {
+	free(winoldpath);
+	errno = EINVAL;
+	return -1;
+    }
+
+    wchar_t *wexport_path = intpath2winpath(export_path);
+    if (!winnewpath) {
+	free(winnewpath);
+	free(winoldpath);
+	errno = EINVAL;
+	return -1;
+    }
+
+    wchar_t tmppath[wcslen(winoldpath) + wcslen(winnewpath) + 4];
+
+    if (winoldpath[0] == '\\') {
+	wcscpy(tmppath, winoldpath);
+    } else {
+	wcscpy(tmppath, winnewpath);
+	wchar_t *lastslash = wcsrchr(tmppath, '\\');
+	if (lastslash) {
+	    wcscpy(&lastslash[1], winoldpath);
+	}
+    }
+
+    wchar_t can_tmppath[sizeof(tmppath)];
+
+    if (!PathCanonicalizeW(can_tmppath, tmppath)) {
+	wcscpy(can_tmppath, tmppath);
+    }
+
+    DWORD attr;
+
+    if (wcsncmp(can_tmppath, wexport_path, wcslen(wexport_path)) ||
+	(attr = GetFileAttributesW(tmppath)) == INVALID_FILE_ATTRIBUTES) {
+	ret = SymLinkW(winoldpath, winnewpath, SYMLINK_JUNCPOINT, oldpath);
+    } else {
+	ret = SymLinkW(winoldpath, winnewpath, (attr & FILE_ATTRIBUTE_DIRECTORY)?SYMLINK_DIRECTORY:0, oldpath);
+    }
+
+    free(wexport_path);
+    free(winnewpath);
+    free(winoldpath);
+
+    return ret;
 }
 
 int win_mknod(U(const char *pathname), U(mode_t mode), U(dev_t dev))
@@ -940,6 +990,7 @@ int win_mkfifo(U(const char *pathname), U(mode_t mode))
 
 int win_link(U(const char *oldpath), U(const char *newpath))
 {
+fprintf(stderr, "link()\n");
     errno = ENOSYS;
     return -1;
 }

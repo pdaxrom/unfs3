@@ -142,6 +142,10 @@
 #define S_IXOTH 00001
 #endif
 
+#ifndef SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
+#define SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE	0x2
+#endif
+
 typedef int socklen_t;
 typedef uint32 uid_t;
 typedef uint32 gid_t;
