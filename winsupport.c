@@ -1015,8 +1015,27 @@ int win_remove(const char *pathname)
 	return -1;
     }
 
-    ret = _wremove(winpath);
+    DWORD attr = GetFileAttributesW(winpath);
+    if (attr == INVALID_FILE_ATTRIBUTES) {
+	errno = EACCES;
+	ret = -1;
+    } else if (attr & FILE_ATTRIBUTE_REPARSE_POINT) {
+	BOOL bret;
+	if (attr & FILE_ATTRIBUTE_DIRECTORY) {
+	    bret = RemoveDirectoryW(winpath);
+	} else {
+	    bret = DeleteFileW(winpath);
+	}
+	if (bret == FALSE) {
+	    errno = EIO;
+	    ret = -1;
+	}
+    } else {
+	ret = _wremove(winpath);
+    }
+
     free(winpath);
+
     return ret;
 }
 
