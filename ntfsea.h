@@ -36,5 +36,6 @@ DLL_EXPORT LONG32 WriteEa(PWSTR FileName, PSTR EaName, PSTR EaValue, ULONG32 EaV
 
 BOOL WSL_getMode(PWSTR FileName, mode_t * Mode);
 BOOL WSL_setMode(PWSTR FileName, mode_t Mode);
+BOOL WSL_chown(PWSTR FileName, uid_t owner, uid_t group);
 
 #endif

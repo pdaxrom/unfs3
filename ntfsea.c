@@ -18,6 +18,8 @@
 #include <windows.h>
 #undef WIN32_NO_STATUS
 
+#include "config.h"
+#include "daemon.h"
 #include <winternl.h>
 #include <ntstatus.h>
 #include <tchar.h>
@@ -27,6 +29,7 @@
 #include <inttypes.h>
 #include <sys/types.h>
 
+#include "winsupport.h"
 #include "ntfsea.h"
 
 NTSYSAPI NTSTATUS NTAPI
@@ -291,6 +294,65 @@ BOOL WSL_setMode(PWSTR FileName, mode_t Mode)
     if (WriteEa(FileName, "$LXMOD", (PSTR) & val, 4) == -1) {
 	return FALSE;
     }
+    return TRUE;
+}
+
+static ULONG AddToEaBuffer(PFILE_FULL_EA_INFORMATION EaBuffer, PSTR EaName, PSTR EaValue, ULONG32 EaValueLength)
+{
+    ULONG EaNameLength =(ULONG)(strlen(EaName) + 1);
+    memcpy_s(EaBuffer->EaName, EaNameLength, EaName, EaNameLength);
+    EaBuffer->EaNameLength = (UCHAR) EaNameLength - 1;
+    if (EaValue == NULL) {
+	EaBuffer->EaValueLength = 0;
+    } else {
+	memcpy_s(EaBuffer->EaName + EaBuffer->EaNameLength + 1, EaValueLength, EaValue, EaValueLength);
+	EaBuffer->EaValueLength = EaValueLength;
+    }
+    return EaBuffer->EaNameLength + 1 + EaBuffer->EaValueLength;
+}
+
+BOOL WSL_chown(PWSTR FileName, uid_t owner, uid_t group)
+{
+    HANDLE FileHandle;
+    CHAR Buffer[MAX_FULLEA] = { 0 };
+    IO_STATUS_BLOCK IoStatusBlock = { 0 };
+    PFILE_FULL_EA_INFORMATION EaBuffer = NULL;
+    ULONG EaLength = 0;
+
+    FileHandle = GetFileHandle(FileName, TRUE, EaBuffer, EaLength);
+    if (FileHandle == NULL) {
+	return FALSE;
+    }
+
+    EaBuffer = (PFILE_FULL_EA_INFORMATION) Buffer;
+    EaBuffer->Flags = 0;
+
+    if ((int)owner != -1) {
+	DWORD val = owner;
+	EaLength = AddToEaBuffer(EaBuffer, "$LXUID", (PSTR)&val, sizeof(val));
+	EaBuffer->NextEntryOffset = 0;
+	EaBuffer = (PFILE_FULL_EA_INFORMATION)((PCHAR) EaBuffer + EaBuffer->NextEntryOffset);
+    }
+
+    if ((int)group != -1) {
+	DWORD val = group;
+	EaBuffer->NextEntryOffset = EaLength;
+	EaLength += AddToEaBuffer(EaBuffer, "$LXGID", (PSTR)&val, sizeof(val));
+	EaBuffer->NextEntryOffset = 0;
+    }
+
+    if (EaLength) {
+	EaLength += FIELD_OFFSET(FILE_FULL_EA_INFORMATION, EaName);
+
+	if (NtSetEaFile(FileHandle, &IoStatusBlock, (PFILE_FULL_EA_INFORMATION) Buffer, EaLength)) {
+	    logmsg(LOG_ERR, "NtSetEaFile()error %ld", GetLastError());
+	    NtClose(FileHandle);
+	    return FALSE;
+	}
+    }
+
+    NtClose(FileHandle);
+
     return TRUE;
 }
 

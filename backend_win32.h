@@ -37,7 +37,7 @@
 #define backend_geteuid() 0
 #define backend_getgid() 0
 #define backend_getuid() 0
-#define backend_lchown win_chown
+#define backend_lchown win_lchown
 #define backend_link win_link
 #define backend_lseek lseek
 #define backend_lstat win_lstat

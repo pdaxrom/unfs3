@@ -374,14 +374,60 @@ int win_truncate(const char *path, off_t length)
     return ret;
 }
 
-int win_chown(U(const char *path), U(uid_t owner), U(gid_t group))
+static int priv_chown(wchar_t *path, uid_t owner, gid_t group)
 {
-    errno = EINVAL;
-    return -1;
+    int ret = -1;
+
+    if (WSL_chown(path, owner, group)) {
+	ret = 0;
+    } else {
+	errno = EINVAL;
+    }
+
+    return ret;
 }
 
-int win_fchown(U(int fd), U(uid_t owner), U(gid_t group))
+int win_chown(const char *path, uid_t owner, gid_t group)
 {
+    wchar_t *winpath;
+    int ret = -1;
+
+fprintf(stderr, "win_chown(%s, %d, %d)\n", path, owner, group);
+
+    winpath = intpath2winpath(path);
+    if (!winpath) {
+	errno = EINVAL;
+	return -1;
+    }
+
+    ret = priv_chown(winpath, owner, group);
+
+    free(winpath);
+    return ret;
+}
+
+int win_fchown(int fd, uid_t owner, gid_t group)
+{
+    wchar_t *winpath;
+    int ret;
+
+fprintf(stderr, "win_fchown(%d, %d)\n", owner, group);
+
+    winpath = intpath2winpath(get_fdname(fd));
+    if (!winpath) {
+	errno = EINVAL;
+	return -1;
+    }
+
+    ret = priv_chown(winpath, owner, group);
+
+    free(winpath);
+    return ret;
+}
+
+int win_lchown(const char *path, uid_t owner, gid_t group)
+{
+fprintf(stderr, "win_chown(%s, %d, %d)\n", path, owner, group);
     errno = EINVAL;
     return -1;
 }

@@ -201,6 +201,7 @@ int win_seteuid(uid_t euid);
 int win_setegid(gid_t egid);
 int win_truncate(const char *path, off_t length);
 int win_chown(const char *path, uid_t owner, gid_t group);
+int win_lchown(const char *path, uid_t owner, gid_t group);
 int win_fchown(int fd, uid_t owner, gid_t group);
 int win_fchmod(int fildes, mode_t mode);
 int win_stat(const char *file_name, backend_statstruct *buf);
