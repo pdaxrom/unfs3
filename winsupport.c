@@ -990,9 +990,62 @@ int win_mkfifo(U(const char *pathname), U(mode_t mode))
 
 int win_link(U(const char *oldpath), U(const char *newpath))
 {
-fprintf(stderr, "link()\n");
-    errno = ENOSYS;
-    return -1;
+    int ret = -1;
+
+    wchar_t *winoldpath = intpath2winpath(oldpath);
+    if (!winoldpath) {
+	errno = EINVAL;
+	return -1;
+    }
+
+    wchar_t *winnewpath = intpath2winpath(newpath);
+    if (!winnewpath) {
+	free(winoldpath);
+	errno = EINVAL;
+	return -1;
+    }
+
+    wchar_t *wexport_path = intpath2winpath(export_path);
+    if (!winnewpath) {
+	free(winnewpath);
+	free(winoldpath);
+	errno = EINVAL;
+	return -1;
+    }
+
+    wchar_t tmppath[wcslen(winoldpath) + wcslen(winnewpath) + 4];
+
+    if (winoldpath[0] == '\\') {
+	wcscpy(tmppath, winoldpath);
+    } else {
+	wcscpy(tmppath, winnewpath);
+	wchar_t *lastslash = wcsrchr(tmppath, '\\');
+	if (lastslash) {
+	    wcscpy(&lastslash[1], winoldpath);
+	}
+    }
+
+    wchar_t can_tmppath[sizeof(tmppath)];
+
+    if (!PathCanonicalizeW(can_tmppath, tmppath)) {
+	wcscpy(can_tmppath, tmppath);
+    }
+
+    if (wcsncmp(can_tmppath, wexport_path, wcslen(wexport_path))) {
+	errno = EACCES;
+    } else {
+	if (CreateHardLinkW(winnewpath, winoldpath, NULL)) {
+	    ret = 0;
+	} else {
+	    errno = EIO;
+	}
+    }
+
+    free(wexport_path);
+    free(winnewpath);
+    free(winoldpath);
+
+    return ret;
 }
 
 int win_statvfs(const char *path, backend_statvfsstruct * buf)

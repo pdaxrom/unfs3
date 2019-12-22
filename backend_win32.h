@@ -66,7 +66,6 @@
 #define backend_init win_init
 #define backend_dirstream UNFS3_WIN_DIR
 #define backend_fsinfo_properties FSF3_LINK | FSF3_SYMLINK | FSF3_HOMOGENEOUS | FSF3_CANSETTIME;
-//#define backend_fsinfo_properties FSF3_HOMOGENEOUS | FSF3_CANSETTIME;
 /*
   Note: FAT has different granularities for different times: 1 day for
   atime, 2 seconds for mtime and 10ms för CreationTime. time_delta
