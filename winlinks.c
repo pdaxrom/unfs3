@@ -12,6 +12,11 @@
 #include <errno.h>
 #include "winlinks.h"
 
+#define IO_REPARSE_TAG_LX_SYMLINK               (0xA000001DL)
+#define IO_REPARSE_TAG_LX_FIFO                  (0x80000024L)
+#define IO_REPARSE_TAG_LX_CHR                   (0x80000025L)
+#define IO_REPARSE_TAG_LX_BLK                   (0x80000026L)
+
 ssize_t ReadLinkW(const wchar_t * pathname, wchar_t * buf, size_t bufsiz)
 {
     size_t path_len = -1;
@@ -39,9 +44,9 @@ ssize_t ReadLinkW(const wchar_t * pathname, wchar_t * buf, size_t bufsiz)
 
     if (DeviceIoControl(hFile, FSCTL_GET_REPARSE_POINT, NULL, 0, rep_data, sizeof(rep_data), &get_size, NULL) != 0) {
 	if (rep_data->ReparseTag == IO_REPARSE_TAG_SYMLINK) {
-	    if (rep_data->SymbolicLinkReparseBuffer.Flags & 0x0001) {
-		logmsg(LOG_INFO, "symbolic link relatived!");
-	    }
+//	    if (rep_data->SymbolicLinkReparseBuffer.Flags & 0x0001) {
+//		logmsg(LOG_INFO, "symbolic link relatived!");
+//	    }
 	    path_len = rep_data->SymbolicLinkReparseBuffer.SubstituteNameLength;
 	    path_len = (path_len > bufsiz) ? bufsiz : path_len;
 	    memcpy(buf, &((BYTE *) rep_data->SymbolicLinkReparseBuffer.PathBuffer)
@@ -51,24 +56,26 @@ ssize_t ReadLinkW(const wchar_t * pathname, wchar_t * buf, size_t bufsiz)
 	    path_len = (path_len > bufsiz) ? bufsiz : path_len;
 	    memcpy(buf, &((BYTE *) rep_data->MountPointReparseBuffer.PathBuffer)
 		   [rep_data->MountPointReparseBuffer.SubstituteNameOffset], path_len);
+	} else if (rep_data->ReparseTag == IO_REPARSE_TAG_LX_SYMLINK) {
+	    path_len = MultiByteToWideChar(CP_UTF8,
+					   0,
+					   &((LPCCH) rep_data->GenericReparseBuffer.DataBuffer)[4],
+					   rep_data->ReparseDataLength - 4,
+					   buf,
+					   bufsiz);
+	    path_len *= sizeof(wchar_t);
+	    if (!path_len) {
+		logmsg(LOG_CRIT, "%s: MultiByteToWideChar failed", __func__);
+		errno = EINVAL;
+		path_len = -1;
+	    }
 	} else {
 	    logmsg(LOG_WARNING, "unsupported reparse tag %08X", (unsigned int)rep_data->ReparseTag);
-	    if (IsReparseTagNameSurrogate(rep_data->ReparseTag) && rep_data->ReparseTag == 0xA000001D) {
-		logmsg(LOG_INFO, "surrogate (%d)", rep_data->ReparseDataLength);
-		path_len = MultiByteToWideChar(CP_UTF8,
-					       0,
-					       &((LPCCH) rep_data->GenericReparseBuffer.DataBuffer)[4],
-					       rep_data->ReparseDataLength - 4,
-					       buf,
-					       bufsiz);
-		path_len *= sizeof(wchar_t);
-		if (!path_len) {
-		    logmsg(LOG_CRIT, "%s: MultiByteToWideChar failed", __func__);
-		}
-	    }
+	    errno = EINVAL;
 	}
     } else {
 	logmsg(LOG_ERR, "can't read reparse data %ld", GetLastError());
+	errno = EINVAL;
     }
 
  out:

@@ -857,15 +857,11 @@ int win_readlink(const char *path, char *buf, size_t bufsiz)
     wchar_t target[PATH_MAX];
     int target_size = -1;
 
-fprintf(stderr, "readlink %s\n", path);
-
     wchar_t *winpath = intpath2winpath(path);
     if (!winpath) {
 	errno = EINVAL;
 	return -1;
     }
-
-wprintf(L"readlink %s\n", winpath);
 
     target_size = ReadLinkW(winpath, target, sizeof(target));
 
