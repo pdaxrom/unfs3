@@ -1156,7 +1156,7 @@ int win_chmod(const char *path, mode_t mode)
 	return -1;
     }
 
-    if (WSL_setMode(winpath, mode | 0x4000) == FALSE) {
+    if (WSL_setMode(winpath, mode | 0x8000) == FALSE) {
 	fprintf(stderr, "Can't set WSL mode!\n");
     }
 
