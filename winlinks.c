@@ -82,11 +82,6 @@ int SymLinkW(const wchar_t * target, const wchar_t * linkpath, uint32_t mode, co
     int ret = -1;
 
     if (mode & SYMLINK_JUNCPOINT) {
-//	wchar_t juncpath[wcslen(linkpath) + 1];
-//	wcscpy(juncpath, L"\\??\\");
-//	wcscpy(&juncpath[4], linkpath);
-//wprintf(L"Juntion req %s\n", juncpath);
-
 	HANDLE hFile = CreateFileW(linkpath,
 				   GENERIC_WRITE,
 				   0,

@@ -1184,7 +1184,7 @@ int win_rmdir(const char *path)
 int win_rename(const char *oldpath, const char *newpath)
 {
     wchar_t *oldwinpath, *newwinpath;
-    int ret;
+    int ret = 0;
 
     if (!strcmp("/", oldpath) && !strcmp("/", newpath)) {
 	/* Emulate root */
@@ -1204,7 +1204,13 @@ int win_rename(const char *oldpath, const char *newpath)
 	return -1;
     }
 
-    ret = _wrename(oldwinpath, newwinpath);
+    if (!MoveFileW(oldwinpath, newwinpath)) {
+	errno = EINVAL;
+	ret = -1;
+    }
+
+//    ret = _wrename(oldwinpath, newwinpath);
+
     free(oldwinpath);
     free(newwinpath);
     return ret;
