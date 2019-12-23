@@ -17,11 +17,16 @@
 #define IO_REPARSE_TAG_LX_CHR                   (0x80000025L)
 #define IO_REPARSE_TAG_LX_BLK                   (0x80000026L)
 
-ssize_t ReadLinkW(const wchar_t * pathname, wchar_t * buf, size_t bufsiz)
+ssize_t ReadLinkW(const wchar_t * pathname, wchar_t * buf, size_t bufsiz, int *extinfo)
 {
     size_t path_len = -1;
     REPARSE_DATA_BUFFER rep_data[REPARSE_DATA_BUFFER_HEADER_SIZE + MAXIMUM_REPARSE_DATA_BUFFER_SIZE];
     DWORD get_size;
+    int file_extinfo = WSL_UNK;
+
+    if (extinfo) {
+	*extinfo = file_extinfo;
+    }
 
     DWORD attr = GetFileAttributesW(pathname);
 
@@ -65,17 +70,24 @@ ssize_t ReadLinkW(const wchar_t * pathname, wchar_t * buf, size_t bufsiz)
 					   bufsiz);
 	    path_len *= sizeof(wchar_t);
 	    if (!path_len) {
-		logmsg(LOG_CRIT, "%s: MultiByteToWideChar failed", __func__);
-		errno = EINVAL;
-		path_len = -1;
+		logmsg(LOG_WARNING, "%s: MultiByteToWideChar failed", __func__);
+//		errno = EINVAL;
+//		path_len = -1;
 	    }
+	    file_extinfo = WSL_LINK;
+	} else if (rep_data->ReparseTag == IO_REPARSE_TAG_LX_FIFO) {
+	    file_extinfo = WSL_FIFO;
 	} else {
-	    logmsg(LOG_WARNING, "unsupported reparse tag %08X", (unsigned int)rep_data->ReparseTag);
+	    logmsg(LOG_WARNING, "unsupported reparse tag %08X (%d bytes)", (unsigned int)rep_data->ReparseTag, rep_data->ReparseDataLength);
 	    errno = EINVAL;
 	}
     } else {
 	logmsg(LOG_ERR, "can't read reparse data %ld", GetLastError());
 	errno = EINVAL;
+    }
+
+    if (extinfo) {
+	*extinfo = file_extinfo;
     }
 
  out:
@@ -107,7 +119,7 @@ int SymLinkW(const wchar_t * target, const wchar_t * linkpath, uint32_t mode, co
 		sizeof(rep_data->GenericReparseBuffer) - sizeof(rep_data->GenericReparseBuffer.DataBuffer) +
 		4 + strlen(origtarget);
 	    rep_data = alloca(rep_length);
-	    rep_data->ReparseTag = 0xA000001D;
+	    rep_data->ReparseTag = IO_REPARSE_TAG_LX_SYMLINK;
 	    rep_data->ReparseDataLength = 4 + strlen(origtarget);
 	    *((DWORD *) &rep_data->GenericReparseBuffer.DataBuffer[0]) = 0x00000002;
 	    memcpy(&(rep_data->GenericReparseBuffer.DataBuffer)[4], origtarget, strlen(origtarget));
@@ -130,6 +142,52 @@ int SymLinkW(const wchar_t * target, const wchar_t * linkpath, uint32_t mode, co
 	} else {
 	    errno = EIO;
 	}
+    }
+
+    return ret;
+}
+
+int WSL_MakeSpecialFile(const wchar_t *pathname, int type)
+{
+    int ret = -1;
+
+    if (type < WSL_FIFO && type > WSL_BLK) {
+	errno = EINVAL;
+	return -1;
+    }
+
+    HANDLE hFile = CreateFileW(pathname,
+			       GENERIC_WRITE,
+			       0,
+			       NULL,
+			       CREATE_NEW,
+			       FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+			       NULL);
+
+    if (hFile == INVALID_HANDLE_VALUE) {
+	logmsg(LOG_ERR, "%s: Could not open file (error %ld)", __func__, GetLastError());
+	errno = EACCES;
+    } else {
+	DWORD returned_bytes;
+	REPARSE_DATA_BUFFER *rep_data;
+	int rep_length = REPARSE_DATA_BUFFER_HEADER_SIZE +
+	    sizeof(rep_data->GenericReparseBuffer) - sizeof(rep_data->GenericReparseBuffer.DataBuffer);
+	rep_data = alloca(rep_length);
+	switch(type) {
+	case WSL_CHAR: rep_data->ReparseTag = IO_REPARSE_TAG_LX_CHR; break;
+	case WSL_BLK:  rep_data->ReparseTag = IO_REPARSE_TAG_LX_BLK; break;
+	default:       rep_data->ReparseTag = IO_REPARSE_TAG_LX_FIFO; break;
+	}
+	rep_data->ReparseDataLength = 0;
+	
+	if (DeviceIoControl(hFile, FSCTL_SET_REPARSE_POINT, rep_data, rep_length, NULL, 0, &returned_bytes, NULL)) {
+	    ret = 0;
+	} else {
+	    logmsg(LOG_ERR, "%s: DeviceIoControl (error %ld)", __func__, GetLastError());
+	    errno = EIO;
+	}
+
+	CloseHandle(hFile);
     }
 
     return ret;
