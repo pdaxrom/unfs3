@@ -8,6 +8,8 @@
 #include <ntdef.h>
 #include <shlwapi.h>
 #include <winbase.h>
+#include <winternl.h>
+#include <ntstatus.h>
 #include <stdio.h>
 #include <errno.h>
 #include "winlinks.h"
@@ -193,44 +195,17 @@ int WSL_MakeSpecialFile(const wchar_t *pathname, int type)
     return ret;
 }
 
-typedef enum _XFILE_INFO_BY_HANDLE_CLASS {
-    _FileBasicInfo,
-    _FileStandardInfo,
-    _FileNameInfo,
-    _FileRenameInfo,
-    _FileDispositionInfo,
-    _FileAllocationInfo,
-    _FileEndOfFileInfo,
-    _FileStreamInfo,
-    _FileCompressionInfo,
-    _FileAttributeTagInfo,
-    _FileIdBothDirectoryInfo,
-    _FileIdBothDirectoryRestartInfo,
-    _FileIoPriorityHintInfo,
-    _FileRemoteProtocolInfo,
-    _FileFullDirectoryInfo,
-    _FileFullDirectoryRestartInfo,
-    FileStorageInfo,
-    FileAlignmentInfo,
-    FileIdInfo,
-    FileIdExtdDirectoryInfo,
-    FileIdExtdDirectoryRestartInfo,
-    FileDispositionInfoEx,
-    FileRenameInfoEx,
-    FileCaseSensitiveInfo,
-    FileNormalizedNameInfo,
-    _MaximumFileInfoByHandleClass
-} XFILE_INFO_BY_HANDLE_CLASS, *PXFILE_INFO_BY_HANDLE_CLASS;
-
-typedef struct _FILE_CASE_SENSITIVE_INFO {
+#ifndef FILE_CS_FLAG_CASE_SENSITIVE_DIR
+#define FILE_CS_FLAG_CASE_SENSITIVE_DIR 0x00000001
+#endif
+#define FileCaseSensitiveInformation (FILE_INFORMATION_CLASS)71
+typedef struct {
     ULONG Flags;
-} FILE_CASE_SENSITIVE_INFO, *PFILE_CASE_SENSITIVE_INFO;
-
-#define FILE_CS_FLAG_CASE_SENSITIVE_DIR     0x00000001
+} FILE_CASE_SENSITIVE_INFORMATION, *PFILE_CASE_SENSITIVE_INFORMATION;
 
 BOOL WSL_SetCsDirectory(const wchar_t *pathname, int enable)
 {
-    BOOL status = FALSE;
+    BOOL ret = FALSE;
     HANDLE hFile = CreateFileW(pathname,
 			       FILE_WRITE_ATTRIBUTES,
 			       FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -243,16 +218,30 @@ BOOL WSL_SetCsDirectory(const wchar_t *pathname, int enable)
 	return FALSE;
     }
 
-    FILE_CASE_SENSITIVE_INFO file_cs = { enable?FILE_CS_FLAG_CASE_SENSITIVE_DIR:0 };
-
-    if (SetFileInformationByHandle(hFile, FileCaseSensitiveInfo, &file_cs, sizeof(file_cs))) {
-	status = TRUE;
-    } else {
-	logmsg(LOG_ERR, "%s: SetFileInformationByHandle %ld", GetLastError());
+    IO_STATUS_BLOCK iob;
+    FILE_CASE_SENSITIVE_INFORMATION info;
+    NTSTATUS stat = NtQueryInformationFile(hFile, &iob, &info, sizeof(info), FileCaseSensitiveInformation);
+    if (!stat && ((enable && (info.Flags & FILE_CS_FLAG_CASE_SENSITIVE_DIR)) ||
+		  (!enable && !(info.Flags & FILE_CS_FLAG_CASE_SENSITIVE_DIR)))){
+	logmsg(LOG_INFO, "Case sensitivite directory already %s", enable ? "enabled" : "disabled");
+	goto out;
     }
 
+    info.Flags = enable ? FILE_CS_FLAG_CASE_SENSITIVE_DIR : 0;
+    stat = NtSetInformationFile(hFile, &iob, &info, sizeof(info), FileCaseSensitiveInformation);
+    if (!stat) {
+	ret = TRUE;
+    } else {
+	if (stat == STATUS_ACCESS_DENIED) {
+	    logmsg(LOG_ERR, "%s: Cannot set case sensitivite directory - access denied", __func__);
+	} else {
+	    logmsg(LOG_ERR, "%s: SetFileInformationByHandle %ld", stat);
+	}
+    }
+
+out:
     CloseHandle(hFile);
-    return status;
+    return ret;
 }
 
 #ifdef READLINK_TEST
