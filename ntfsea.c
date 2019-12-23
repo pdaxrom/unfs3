@@ -276,7 +276,7 @@ DLL_EXPORT LONG32 WriteEa(PWSTR FileName, PSTR EaName, PSTR EaValue, ULONG32 EaV
     return EaBuffer->EaValueLength;
 }
 
-BOOL WSL_getMode(PWSTR FileName, mode_t * Mode)
+BOOL WSL_GetMode(PWSTR FileName, mode_t * Mode)
 {
     struct Ea *ea = GetEa(FileName, "$LXMOD");
     if (!ea) {
@@ -288,7 +288,7 @@ BOOL WSL_getMode(PWSTR FileName, mode_t * Mode)
     return TRUE;
 }
 
-BOOL WSL_setMode(PWSTR FileName, mode_t Mode)
+BOOL WSL_SetMode(PWSTR FileName, mode_t Mode)
 {
     uint32_t val = Mode;
     if (WriteEa(FileName, "$LXMOD", (PSTR) & val, 4) == -1) {
@@ -308,10 +308,11 @@ static ULONG AddToEaBuffer(PFILE_FULL_EA_INFORMATION EaBuffer, PSTR EaName, PSTR
 	memcpy_s(EaBuffer->EaName + EaBuffer->EaNameLength + 1, EaValueLength, EaValue, EaValueLength);
 	EaBuffer->EaValueLength = EaValueLength;
     }
+    EaBuffer->Flags = 0;
     return EaBuffer->EaNameLength + 1 + EaBuffer->EaValueLength;
 }
 
-BOOL WSL_chown(PWSTR FileName, uid_t owner, uid_t group)
+BOOL WSL_Chown(PWSTR FileName, uid_t owner, uid_t group)
 {
     HANDLE FileHandle;
     CHAR Buffer[MAX_FULLEA] = { 0 };
@@ -325,27 +326,31 @@ BOOL WSL_chown(PWSTR FileName, uid_t owner, uid_t group)
     }
 
     EaBuffer = (PFILE_FULL_EA_INFORMATION) Buffer;
-    EaBuffer->Flags = 0;
 
     if ((int)owner != -1) {
 	DWORD val = owner;
 	EaLength = AddToEaBuffer(EaBuffer, "$LXUID", (PSTR)&val, sizeof(val));
 	EaBuffer->NextEntryOffset = 0;
-	EaBuffer = (PFILE_FULL_EA_INFORMATION)((PCHAR) EaBuffer + EaBuffer->NextEntryOffset);
+	EaLength += FIELD_OFFSET(FILE_FULL_EA_INFORMATION, EaName);
     }
 
     if ((int)group != -1) {
 	DWORD val = group;
+	EaLength = (EaLength + 3) & ~3;
 	EaBuffer->NextEntryOffset = EaLength;
+	EaBuffer = (PFILE_FULL_EA_INFORMATION)((PCHAR) EaBuffer + EaBuffer->NextEntryOffset);
 	EaLength += AddToEaBuffer(EaBuffer, "$LXGID", (PSTR)&val, sizeof(val));
 	EaBuffer->NextEntryOffset = 0;
+	EaLength += FIELD_OFFSET(FILE_FULL_EA_INFORMATION, EaName);
     }
 
     if (EaLength) {
-	EaLength += FIELD_OFFSET(FILE_FULL_EA_INFORMATION, EaName);
-
-	if (NtSetEaFile(FileHandle, &IoStatusBlock, (PFILE_FULL_EA_INFORMATION) Buffer, EaLength)) {
-	    logmsg(LOG_ERR, "NtSetEaFile()error %ld", GetLastError());
+	NTSTATUS status;
+	if ((status = NtSetEaFile(FileHandle, &IoStatusBlock, (PFILE_FULL_EA_INFORMATION) Buffer, EaLength))) {
+	//    if (status == STATUS_EA_LIST_INCONSISTENT) {
+	//	logmsg(LOG_ERR, "bad format of list");
+	//    }
+	    logmsg(LOG_ERR, "NtSetEaFile() error %ld", GetLastError());
 	    NtClose(FileHandle);
 	    return FALSE;
 	}
@@ -354,6 +359,45 @@ BOOL WSL_chown(PWSTR FileName, uid_t owner, uid_t group)
     NtClose(FileHandle);
 
     return TRUE;
+}
+
+BOOL WSL_GetParameters(PWSTR FileName, mode_t *mode, uid_t *owner, uid_t *group, PLXSS_FILE_EXTENDED_ATTRIBUTES_V1 lxattrb, BOOL *uselxattrb)
+{
+    struct EaList *eaList;
+    unsigned int i;
+    BOOL status = FALSE;
+
+    *mode = -1;
+    *owner = -1;
+    *group = -1;
+    *uselxattrb = FALSE;
+
+    eaList = GetEaList(FileName);
+
+    if (!eaList) {
+	return FALSE;
+    }
+
+    for (i = 0; i < eaList->ListSize; i++) {
+	if (!strcmp(eaList->List[i].Name, "$LXMOD") && eaList->List[i].ValueLength == 4) {
+	    *mode = *((uint32_t *) eaList->List[i].Value);
+	    status = TRUE;
+	} else if (!strcmp(eaList->List[i].Name, "$LXUID") && eaList->List[i].ValueLength == 4) {
+	    *owner = *((uint32_t *) eaList->List[i].Value);
+	    status = TRUE;
+	} else if (!strcmp(eaList->List[i].Name, "$LXGID") && eaList->List[i].ValueLength == 4) {
+	    *group = *((uint32_t *) eaList->List[i].Value);
+	    status = TRUE;
+	} else if (!strcmp(eaList->List[i].Name, "$LXATTRB") && eaList->List[i].ValueLength == sizeof(LXSS_FILE_EXTENDED_ATTRIBUTES_V1)) {
+	    *uselxattrb = TRUE;
+	    memcpy(lxattrb, eaList->List[i].Value, sizeof(LXSS_FILE_EXTENDED_ATTRIBUTES_V1));
+	    status = TRUE;
+	}
+    }
+
+    free(eaList);
+
+    return status;
 }
 
 #endif
