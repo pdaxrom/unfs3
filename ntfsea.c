@@ -61,12 +61,12 @@ HANDLE GetFileHandle(PWSTR DosFileName, BOOL Write, PFILE_FULL_EA_INFORMATION Ea
 {
     UNICODE_STRING FileName;
     OBJECT_ATTRIBUTES ObjectAttributes;
-    ACCESS_MASK DesiredAccess = GENERIC_READ;
+    ACCESS_MASK DesiredAccess = FILE_GENERIC_READ;
     HANDLE FileHandle;
     IO_STATUS_BLOCK IoStatusBlock;
 
     if (Write) {
-	DesiredAccess |= GENERIC_WRITE;
+	DesiredAccess |= FILE_GENERIC_WRITE;
     }
 
     if (!RtlDosPathNameToNtPathName_U(DosFileName, &FileName, NULL, NULL)) {
@@ -82,7 +82,7 @@ HANDLE GetFileHandle(PWSTR DosFileName, BOOL Write, PFILE_FULL_EA_INFORMATION Ea
 		     NULL,
 		     0,
 		     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-		     FILE_OPEN_IF,
+		     Write ? FILE_OPEN_IF : FILE_OPEN,
 		     0,
 		     EaBuffer,
 		     EaLength)) {
