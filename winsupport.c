@@ -42,6 +42,9 @@ typedef struct _fdname {
 
 static fdname *fdnames = NULL;
 
+static uid_t fake_euid = 0;
+static uid_t fake_egid = 0;
+
 static char *get_fdname(int fd)
 {
     fdname *fn;
@@ -349,13 +352,15 @@ static wchar_t *intpath2winpath(const char *intpath)
     return winpath;
 }
 
-int win_seteuid(U(uid_t euid))
+int win_seteuid(uid_t euid)
 {
+    fake_euid = euid;
     return 0;
 }
 
-int win_setegid(U(gid_t egid))
+int win_setegid(gid_t egid)
 {
+    fake_egid = egid;
     return 0;
 }
 
@@ -378,7 +383,7 @@ static int priv_chown(wchar_t *path, uid_t owner, gid_t group)
 {
     int ret = -1;
 
-    if (WSL_chown(path, owner, group)) {
+    if (WSL_Chown(path, owner, group)) {
 	ret = 0;
     } else {
 	errno = EINVAL;
@@ -391,8 +396,6 @@ int win_chown(const char *path, uid_t owner, gid_t group)
 {
     wchar_t *winpath;
     int ret = -1;
-
-fprintf(stderr, "win_chown(%s, %d, %d)\n", path, owner, group);
 
     winpath = intpath2winpath(path);
     if (!winpath) {
@@ -408,48 +411,18 @@ fprintf(stderr, "win_chown(%s, %d, %d)\n", path, owner, group);
 
 int win_fchown(int fd, uid_t owner, gid_t group)
 {
-    wchar_t *winpath;
-    int ret;
-
-fprintf(stderr, "win_fchown(%d, %d)\n", owner, group);
-
-    winpath = intpath2winpath(get_fdname(fd));
-    if (!winpath) {
-	errno = EINVAL;
-	return -1;
-    }
-
-    ret = priv_chown(winpath, owner, group);
-
-    free(winpath);
-    return ret;
+    return win_chown(get_fdname(fd), owner, group);
 }
 
+//FIXME: seems no native way to add permission to symlink
 int win_lchown(const char *path, uid_t owner, gid_t group)
 {
-fprintf(stderr, "win_chown(%s, %d, %d)\n", path, owner, group);
-    errno = EINVAL;
-    return -1;
+    return win_chown(path, owner, group);
 }
 
 int win_fchmod(int fildes, mode_t mode)
 {
-    wchar_t *winpath;
-    int ret;
-
-    winpath = intpath2winpath(get_fdname(fildes));
-    if (!winpath) {
-	errno = EINVAL;
-	return -1;
-    }
-
-    if (WSL_setMode(winpath, mode | 0x8000) == FALSE) {
-	fprintf(stderr, "Can't set WSL mode!\n");
-    }
-
-    ret = _wchmod(winpath, mode);
-    free(winpath);
-    return ret;
+    return win_chmod(get_fdname(fildes), mode);
 }
 
 int inet_aton(const char *cp, struct in_addr *addr)
@@ -468,12 +441,11 @@ ssize_t pread(int fd, void *buf, size_t count, off64_t offset)
     ssize_t size;
     __int64 ret;
 
-    if ((ret = _lseeki64(fd, (__int64)offset, SEEK_SET)) < 0)
-    {
-		fprintf(stderr, "Seeking for offset %I64d failed when reading.\n", offset);
-    	return -1;
-	}
-	
+    if ((ret = _lseeki64(fd, (__int64)offset, SEEK_SET)) < 0) {
+	fprintf(stderr, "Seeking for offset %I64d failed when reading.\n", offset);
+	return -1;
+    }
+
     size = read(fd, buf, count);
     return size;
 }
@@ -483,13 +455,12 @@ ssize_t pwrite(int fd, const void *buf, size_t count, off64_t offset)
     ssize_t size;
     __int64 ret;
 
-    if ((ret = _lseeki64(fd, (__int64)offset, SEEK_SET)) < 0)
-	{
-		fprintf(stderr, "Seeking for offset %I64d failed when writing.\n", offset);
-		return -1;
-	}
-    size = write(fd, buf, count);
+    if ((ret = _lseeki64(fd, (__int64)offset, SEEK_SET)) < 0) {
+	fprintf(stderr, "Seeking for offset %I64d failed when writing.\n", offset);
+	return -1;
+    }
 
+    size = write(fd, buf, count);
     return size;
 }
 
@@ -506,11 +477,13 @@ int win_init()
     /* Set up locale, so that string compares works correctly */
     setlocale(LC_ALL, "");
 
+#if 0
     /* Verify that -s is used */
     if (!opt_singleuser) {
 	fprintf(stderr, "Single-user mode is required on this platform.\n");
 	exit(1);
     }
+#endif
 
     /* Verify that -d is used */
     if (opt_detach) {
@@ -577,6 +550,10 @@ static int priv_stat(const char *file_name, backend_statstruct *buf, int l_mode)
     struct _stati64 win_statbuf;
     unsigned long long fti;
     mode_t wsl_mode = 0;
+    int wsl_extinfo;
+    uid_t wsl_owner, wsl_group;
+    LXSS_FILE_EXTENDED_ATTRIBUTES_V1 lxattr;
+    BOOL uselxattr;
 
     /* Special case: Our top-level virtual root, containing each drive
        represented as a directory. Compare with "My Computer" etc. This
@@ -616,25 +593,44 @@ static int priv_stat(const char *file_name, backend_statstruct *buf, int l_mode)
 	return ret;
     }
 
+    WSL_GetParameters(winpath, &wsl_mode, &wsl_owner, &wsl_group, &lxattr, &uselxattr);
+
+    wprintf(L"%s>>>%d %d %d (%d)\n", winpath, wsl_mode, wsl_owner, wsl_group, (mode_t) -1);
+
     wchar_t target[PATH_MAX];
     int target_size;
 
-    target_size = ReadLinkW(winpath, target, sizeof(target));
+    target_size = ReadLinkW(winpath, target, sizeof(target), &wsl_extinfo);
     if (target_size != -1) {
 	target[target_size / sizeof(wchar_t)] = 0;
 	buf->st_mode = S_IFLNK | S_IRWXU | S_IRWXG | S_IRWXO;
     } else {
-	if (WSL_getMode(winpath, &wsl_mode)) {
-	    buf->st_mode = (wsl_mode & ~S_IFMT) | (win_statbuf.st_mode & S_IFMT); //(wsl_mode & 0x1ff) | (win_statbuf.st_mode & (~0x1ff));
+	if (/*WSL_GetMode(winpath, &wsl_mode)*/ wsl_mode != ((mode_t) -1)) {
+	    buf->st_mode = wsl_mode; //(wsl_mode & ~S_IFMT) | (win_statbuf.st_mode & S_IFMT);
 	} else {
 	    buf->st_mode = (win_statbuf.st_mode & ~(S_IRWXG | S_IRWXO)) |
 				((win_statbuf.st_mode & S_IFDIR)?(S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH):(S_IXUSR | S_IRGRP | S_IROTH));
 	}
+	if (wsl_extinfo == WSL_FIFO) {
+	    buf->st_mode = (buf->st_mode & ~S_IFMT) | S_IFIFO;
+	}
     }
 
+    if ((int) wsl_owner != -1) {
+	buf->st_uid = wsl_owner;
+    } else {
+	buf->st_uid = win_statbuf.st_uid;
+    }
+
+    if ((int) wsl_group != -1) {
+	buf->st_gid = wsl_group;
+    } else {
+	buf->st_gid = win_statbuf.st_gid;
+    }
+
+    fprintf(stderr, "%d/%d %d/%d\n", wsl_owner, win_statbuf.st_uid, wsl_group, win_statbuf.st_gid);
+
     buf->st_nlink = win_statbuf.st_nlink;
-    buf->st_uid = win_statbuf.st_uid;
-    buf->st_gid = win_statbuf.st_gid;
     buf->st_rdev = win_statbuf.st_rdev;
 
     if (l_mode && target_size != -1) {
@@ -784,13 +780,22 @@ int win_open(const char *pathname, int flags, ...)
     }
 
     fd = _wopen(winpath, flags | O_BINARY, mode);
+
+    if (fd != -1 && flags & O_CREAT) {
+	if (WSL_SetMode(winpath, mode | S_IFREG) == FALSE) {
+	    fprintf(stderr, "Can't set WSL mode!\n");
+	}
+	if (WSL_Chown(winpath, fake_euid, fake_egid) == FALSE) {
+	    fprintf(stderr, "Can't set WSL chown!\n");
+	}
+    }
+
     free(winpath);
     if (fd < 0) {
 	return fd;
     }
 
     return add_fdname(fd, pathname);
-
 }
 
 int win_close(int fd)
@@ -909,7 +914,7 @@ int win_readlink(const char *path, char *buf, size_t bufsiz)
 	return -1;
     }
 
-    target_size = ReadLinkW(winpath, target, sizeof(target));
+    target_size = ReadLinkW(winpath, target, sizeof(target), NULL);
 
     if (target_size > 0) {
 	for (unsigned int i = 0; i < (target_size / sizeof(wchar_t)); i++) {
@@ -950,8 +955,14 @@ int win_mkdir(const char *pathname, mode_t mode)
     /* FIXME: Use mode */
     ret = _wmkdir(winpath);
 
-    if (WSL_setMode(winpath, mode | 0x4000) == FALSE) {
-	fprintf(stderr, "Can't set WSL mode!\n");
+    if (ret != -1) {
+	if (WSL_SetMode(winpath, mode | S_IFDIR) == FALSE) {
+	    fprintf(stderr, "Can't set WSL mode!\n");
+	}
+
+	if (WSL_Chown(winpath, fake_euid, fake_egid) == FALSE) {
+	    fprintf(stderr, "Can't set WSL chown!\n");
+	}
     }
 
     free(winpath);
@@ -1024,13 +1035,39 @@ int win_mknod(U(const char *pathname), U(mode_t mode), U(dev_t dev))
     return -1;
 }
 
-int win_mkfifo(U(const char *pathname), U(mode_t mode))
+int win_mkfifo(const char *pathname, U(mode_t mode))
 {
-    errno = ENOSYS;
-    return -1;
+    wchar_t *winpath;
+    int ret;
+
+    if (!strcmp("/", pathname)) {
+	/* Emulate root */
+	errno = EROFS;
+	return -1;
+    }
+
+    winpath = intpath2winpath(pathname);
+    if (!winpath) {
+	errno = EINVAL;
+	return -1;
+    }
+
+//    if (WSL_SetMode(winpath, mode | S_IFIFO) == FALSE) {
+//	fprintf(stderr, "%s: Can't set WSL mode!\n", __func__);
+//    }
+
+    ret = WSL_MakeSpecialFile(winpath, WSL_FIFO);
+
+//    if (WSL_setMode(winpath, mode) == FALSE) {
+//	fprintf(stderr, "%s: Can't set WSL mode!\n", __func__);
+//    }
+
+    free(winpath);
+
+    return ret;
 }
 
-int win_link(U(const char *oldpath), U(const char *newpath))
+int win_link(const char *oldpath, const char *newpath)
 {
     int ret = -1;
 
@@ -1202,8 +1239,12 @@ int win_chmod(const char *path, mode_t mode)
 	return -1;
     }
 
-    if (WSL_setMode(winpath, mode | 0x8000) == FALSE) {
-	fprintf(stderr, "Can't set WSL mode!\n");
+    DWORD attr = GetFileAttributesW(winpath);
+
+    if ((attr != INVALID_FILE_ATTRIBUTES) && !(attr & FILE_ATTRIBUTE_REPARSE_POINT)) {
+	if (WSL_SetMode(winpath, mode | ((attr & FILE_ATTRIBUTE_DIRECTORY)?S_IFDIR:S_IFREG)) == FALSE) {
+	    fprintf(stderr, "Can't set WSL mode!\n");
+	}
     }
 
     ret = _wchmod(winpath, mode);
@@ -1390,7 +1431,7 @@ int win_access(const char *path, int mode)
 	return -1;
     }
 
-    if (!WSL_getMode(winpath, &f_mode)) {
+    if (!WSL_GetMode(winpath, &f_mode)) {
 	f_mode = (attr & FILE_ATTRIBUTE_DIRECTORY)?
 		(S_IRUSR | S_IXUSR | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH):
 		(S_IRUSR | S_IXUSR | S_IRGRP | S_IROTH);
