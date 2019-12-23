@@ -16,4 +16,6 @@ int SymLinkW(const wchar_t *target, const wchar_t *linkpath, uint32_t mode, cons
 
 int WSL_MakeSpecialFile(const wchar_t *pathname, int type);
 
+BOOL WSL_SetCsDirectory(const wchar_t *pathname, int enable);
+
 #endif

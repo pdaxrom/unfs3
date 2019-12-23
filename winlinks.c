@@ -193,6 +193,68 @@ int WSL_MakeSpecialFile(const wchar_t *pathname, int type)
     return ret;
 }
 
+typedef enum _XFILE_INFO_BY_HANDLE_CLASS {
+    _FileBasicInfo,
+    _FileStandardInfo,
+    _FileNameInfo,
+    _FileRenameInfo,
+    _FileDispositionInfo,
+    _FileAllocationInfo,
+    _FileEndOfFileInfo,
+    _FileStreamInfo,
+    _FileCompressionInfo,
+    _FileAttributeTagInfo,
+    _FileIdBothDirectoryInfo,
+    _FileIdBothDirectoryRestartInfo,
+    _FileIoPriorityHintInfo,
+    _FileRemoteProtocolInfo,
+    _FileFullDirectoryInfo,
+    _FileFullDirectoryRestartInfo,
+    FileStorageInfo,
+    FileAlignmentInfo,
+    FileIdInfo,
+    FileIdExtdDirectoryInfo,
+    FileIdExtdDirectoryRestartInfo,
+    FileDispositionInfoEx,
+    FileRenameInfoEx,
+    FileCaseSensitiveInfo,
+    FileNormalizedNameInfo,
+    _MaximumFileInfoByHandleClass
+} XFILE_INFO_BY_HANDLE_CLASS, *PXFILE_INFO_BY_HANDLE_CLASS;
+
+typedef struct _FILE_CASE_SENSITIVE_INFO {
+    ULONG Flags;
+} FILE_CASE_SENSITIVE_INFO, *PFILE_CASE_SENSITIVE_INFO;
+
+#define FILE_CS_FLAG_CASE_SENSITIVE_DIR     0x00000001
+
+BOOL WSL_SetCsDirectory(const wchar_t *pathname, int enable)
+{
+    BOOL status = FALSE;
+    HANDLE hFile = CreateFileW(pathname,
+			       FILE_WRITE_ATTRIBUTES,
+			       FILE_SHARE_READ | FILE_SHARE_WRITE,
+			       NULL,
+			       OPEN_EXISTING,
+			       FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+			       NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+	logmsg(LOG_ERR, "%s: Could not open file (error %ld)", __func__, GetLastError());
+	return FALSE;
+    }
+
+    FILE_CASE_SENSITIVE_INFO file_cs = { enable?FILE_CS_FLAG_CASE_SENSITIVE_DIR:0 };
+
+    if (SetFileInformationByHandle(hFile, FileCaseSensitiveInfo, &file_cs, sizeof(file_cs))) {
+	status = TRUE;
+    } else {
+	logmsg(LOG_ERR, "%s: SetFileInformationByHandle %ld", GetLastError());
+    }
+
+    CloseHandle(hFile);
+    return status;
+}
+
 #ifdef READLINK_TEST
 int main(int argc, char *argv[])
 {

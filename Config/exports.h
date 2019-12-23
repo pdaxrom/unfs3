@@ -14,6 +14,7 @@
 #define OPT_RW			4
 #define OPT_REMOVABLE		8
 #define OPT_INSECURE		16
+#define OPT_CASE		32
 
 #define PASSWORD_MAXLEN   64
 

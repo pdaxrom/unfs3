@@ -56,6 +56,7 @@ typedef struct {
 	struct in_addr	mask;
 	uint32		anonuid;
 	uint32		anongid;
+	int		caseopt;
 	struct e_host	*next;
 } e_host;
 
@@ -436,6 +437,18 @@ static void add_option_with_value(const char *opt, const char *val)
     	cur_host.anonuid = atoi(val);
     } else if (strcmp(opt,"anongid") == 0) {
     	cur_host.anongid = atoi(val);
+#if WIN32
+    } else if (strcmp(opt,"case") == 0) {
+	if (strcasecmp(val, "yes") == 0) {
+	    cur_host.caseopt = 1;
+	    cur_host.options |= OPT_CASE;
+	} else if (strcasecmp(val, "no") == 0) {
+	    cur_host.caseopt = 0;
+	    cur_host.options |= OPT_CASE;
+	} else {
+	    logmsg(LOG_WARNING, "Warning: case option requring yes or no");
+	}
+#endif
     } else {
         logmsg(LOG_WARNING, "Warning: unknown exports option `%s' ignored",
             opt);
@@ -609,6 +622,32 @@ void print_list(void)
 	}
 }
 
+#ifdef WIN32
+int win_set_cs_dir(const char *path, int enable);
+
+static void set_cs_dirs(void)
+{
+	e_item *item;
+	e_host *host;
+	
+	item = e_list;
+		
+	while (item) {
+		host = item->hosts;
+		while (host) {
+			if (host->options & OPT_CASE) {
+				if (!opt_detach) {
+					printf("%s case sensitivity for %s\n", (host->caseopt)?"Enable":"Disable", item->path);
+				}
+				win_set_cs_dir(item->path, host->caseopt);
+			}
+			host = (e_host *) host->next;
+		}
+		item = (e_item *) item->next;
+	}
+}
+#endif
+
 /*
  * clear current parse state
  */
@@ -666,7 +705,11 @@ int exports_parse(void)
 	/* print out new list for debugging */
 	if (!opt_detach)
 		print_list();
-	
+
+#ifdef WIN32
+	set_cs_dirs();
+#endif
+
 	free_list(export_list);
 	free_nfslist(exports_nfslist);
 	export_list = e_list;

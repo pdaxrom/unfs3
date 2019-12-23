@@ -1451,6 +1451,27 @@ int win_access(const char *path, int mode)
     return ret;
 }
 
+int win_set_cs_dir(const char *path, int enable)
+{
+    wchar_t *winpath;
+    int ret = -1;
+
+    winpath = intpath2winpath(path);
+    if (!winpath) {
+	errno = EINVAL;
+	return -1;
+    }
+
+    if (!WSL_SetCsDirectory(winpath, enable)) {
+	errno = EINVAL;
+	ret = -1;
+    }
+
+    free(winpath);
+    return ret;
+
+}
+
 #endif				       /* WIN32 */
 
 /* ISO C forbids an empty source file */

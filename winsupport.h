@@ -240,6 +240,7 @@ int win_rename(const char *oldpath, const char *newpath);
 int win_gen_nonce(char *nonce);
 int win_utf8ncasecmp(const char *s1, const char *s2, size_t n);
 int win_access(const char *pathname, int mode);
+int win_set_cs_dir(const char *path, int enable);
 
 #endif /* UNFS3_WINSUPPORT_H */
 #endif /* WIN32 */
