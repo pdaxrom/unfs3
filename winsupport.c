@@ -25,8 +25,7 @@
 #include <direct.h>
 #include <dirent.h>
 #include <locale.h>
-#include "ntfsea.h"
-#include "winlinks.h"
+#include "wsl.h"
 
 #define MAX_NUM_DRIVES 26
 #define FT70SEC 11644473600LL	       /* seconds between 1601-01-01 and
@@ -379,11 +378,11 @@ int win_truncate(const char *path, off_t length)
     return ret;
 }
 
-static int priv_chown(wchar_t *path, uid_t owner, gid_t group)
+static int priv_chown(wchar_t *path, int nodereference, uid_t owner, gid_t group)
 {
     int ret = -1;
 
-    if (WSL_Chown(path, owner, group)) {
+    if (WSL_SetParameters(path, -1, nodereference, owner, group, -1)) {
 	ret = 0;
     } else {
 	errno = EINVAL;
@@ -403,7 +402,7 @@ int win_chown(const char *path, uid_t owner, gid_t group)
 	return -1;
     }
 
-    ret = priv_chown(winpath, owner, group);
+    ret = priv_chown(winpath, 0, owner, group);
 
     free(winpath);
     return ret;
@@ -414,10 +413,21 @@ int win_fchown(int fd, uid_t owner, gid_t group)
     return win_chown(get_fdname(fd), owner, group);
 }
 
-//FIXME: seems no native way to add permission to symlink
 int win_lchown(const char *path, uid_t owner, gid_t group)
 {
-    return win_chown(path, owner, group);
+    wchar_t *winpath;
+    int ret = -1;
+
+    winpath = intpath2winpath(path);
+    if (!winpath) {
+	errno = EINVAL;
+	return -1;
+    }
+
+    ret = priv_chown(winpath, 1, owner, group);
+
+    free(winpath);
+    return ret;
 }
 
 int win_fchmod(int fildes, mode_t mode)
@@ -552,6 +562,7 @@ static int priv_stat(const char *file_name, backend_statstruct *buf, int l_mode)
     mode_t wsl_mode = 0;
     int wsl_extinfo;
     uid_t wsl_owner, wsl_group;
+    dev_t wsl_dev;
     LXSS_FILE_EXTENDED_ATTRIBUTES_V1 lxattr;
     BOOL uselxattr;
 
@@ -593,28 +604,33 @@ static int priv_stat(const char *file_name, backend_statstruct *buf, int l_mode)
 	return ret;
     }
 
-    WSL_GetParameters(winpath, &wsl_mode, &wsl_owner, &wsl_group, &lxattr, &uselxattr);
-
-    wprintf(L"%s>>>%d %d %d (%d)\n", winpath, wsl_mode, wsl_owner, wsl_group, (mode_t) -1);
-
+    int ext_info;
     wchar_t target[PATH_MAX];
-    int target_size;
+    int target_size = WSL_ReadLinkW(winpath, target, sizeof(target), &ext_info);
 
-    target_size = ReadLinkW(winpath, target, sizeof(target), &wsl_extinfo);
-    if (target_size != -1) {
-	target[target_size / sizeof(wchar_t)] = 0;
-	buf->st_mode = S_IFLNK | S_IRWXU | S_IRWXG | S_IRWXO;
-    } else {
-	if (/*WSL_GetMode(winpath, &wsl_mode)*/ wsl_mode != ((mode_t) -1)) {
-	    buf->st_mode = wsl_mode; //(wsl_mode & ~S_IFMT) | (win_statbuf.st_mode & S_IFMT);
-	} else {
-	    buf->st_mode = (win_statbuf.st_mode & ~(S_IRWXG | S_IRWXO)) |
-				((win_statbuf.st_mode & S_IFDIR)?(S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH):(S_IXUSR | S_IRGRP | S_IROTH));
-	}
-	if (wsl_extinfo == WSL_FIFO) {
-	    buf->st_mode = (buf->st_mode & ~S_IFMT) | S_IFIFO;
+    int noderef = (target_size == -1 && ext_info > WSL_LINK) ? 1 : 0;
+
+    if (!WSL_GetParameters(winpath, noderef | l_mode, &wsl_mode, &wsl_owner, &wsl_group, &wsl_dev, NULL, NULL)) {
+	wsl_mode = (win_statbuf.st_mode & ~(S_IRWXG | S_IRWXO)) |
+		   ((win_statbuf.st_mode & S_IFDIR)?(S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH):(S_IXUSR | S_IRGRP | S_IROTH));
+
+	switch (ext_info) {
+	case WSL_LINK:
+	    wsl_mode = S_IFLNK | (S_IRWXU | S_IRWXG | S_IRWXO);
+	    break;
+	case WSL_FIFO:
+	    wsl_mode = S_IFIFO | (wsl_mode & ~S_IFMT);
+	    break;
+	case WSL_CHR:
+	    wsl_mode = S_IFCHR | (wsl_mode & ~S_IFMT);
+	    break;
+	case WSL_BLK:
+	    wsl_mode = S_IFBLK | (wsl_mode & ~S_IFMT);
+	    break;
 	}
     }
+
+    buf->st_mode = wsl_mode;
 
     if ((int) wsl_owner != -1) {
 	buf->st_uid = wsl_owner;
@@ -628,10 +644,13 @@ static int priv_stat(const char *file_name, backend_statstruct *buf, int l_mode)
 	buf->st_gid = win_statbuf.st_gid;
     }
 
-    fprintf(stderr, "%d/%d %d/%d\n", wsl_owner, win_statbuf.st_uid, wsl_group, win_statbuf.st_gid);
 
-    buf->st_nlink = win_statbuf.st_nlink;
-    buf->st_rdev = win_statbuf.st_rdev;
+    if (wsl_dev != (dev_t)-1) {
+	buf->st_rdev = wsl_dev;
+    } else {
+	buf->st_rdev = win_statbuf.st_rdev;
+    }
+
 
     if (l_mode && target_size != -1) {
 	buf->st_size = WideCharToMultiByte(CP_UTF8, 0, target, target_size / sizeof(wchar_t), NULL, 0, NULL, NULL);
@@ -641,6 +660,7 @@ static int priv_stat(const char *file_name, backend_statstruct *buf, int l_mode)
 
     buf->st_blocks = win_statbuf.st_size / 512;
 
+#if 0
     /* Windows miscalculates DST sometimes in stat() calls, so we need
        to use more standard Windows APIs. However CreateFile() cannot
        open files we don't have access to (excluding GetFileTime()) and
@@ -687,6 +707,51 @@ static int priv_stat(const char *file_name, backend_statstruct *buf, int l_mode)
 	/* Windows doesn't have "change time", so use modification time */
 	buf->st_ctime = buf->st_mtime;
     }
+#endif
+
+{
+    BY_HANDLE_FILE_INFORMATION fileinfo;
+
+//    HANDLE hFile = GetFileHandle(winpath, FALSE, NULL, NULL);
+    HANDLE hFile = CreateFileW(winpath,
+			       0,
+			       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+			       NULL,
+			       OPEN_EXISTING,
+			       FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+			       NULL);
+
+    if (hFile != INVALID_HANDLE_VALUE) {
+	if (GetFileInformationByHandle(hFile, &fileinfo)) {
+	    //wprintf(L"%s: %08X%08X\n", winpath, fileinfo.nFileIndexHigh, fileinfo.nFileIndexLow);
+	    buf->st_ino = (uint64)((uint64)fileinfo.nFileIndexHigh << 32) | fileinfo.nFileIndexLow;
+
+	    fti = (unsigned long long)fileinfo.ftLastAccessTime.dwHighDateTime << 32 | fileinfo.ftLastAccessTime.dwLowDateTime;
+	    buf->st_atime = fti / 10000000 - FT70SEC;
+	    fti = (unsigned long long)fileinfo.ftLastWriteTime.dwHighDateTime << 32 | fileinfo.ftLastWriteTime.dwLowDateTime;
+	    buf->st_mtime = fti / 10000000 - FT70SEC;
+	    /* Windows doesn't have "change time", so use modification time */
+	    buf->st_ctime = buf->st_mtime;
+
+	    buf->st_nlink = fileinfo.nNumberOfLinks; //win_statbuf.st_nlink;
+	} else {
+	    logmsg(LOG_ERR, "%s: GetFileInformationByHandle()", __func__);
+	    wprintf(L">>>%s\n", winpath);
+	    errno = ENOENT;
+	    free(winpath);
+	    CloseHandle(hFile);
+	    return -1;
+	}
+
+	CloseHandle(hFile);
+    } else {
+	logmsg(LOG_ERR, "%s: GetFileInformationByHandle()", __func__);
+	wprintf(L">>>%s\n", winpath);
+	errno = ENOENT;
+	free(winpath);
+	return -1;
+    }
+}
 
     /*
      * Windows doesn't update the modification time for directories
@@ -710,6 +775,7 @@ static int priv_stat(const char *file_name, backend_statstruct *buf, int l_mode)
     retval = GetFullPathNameW(winpath, wsizeof(pathbuf), pathbuf, NULL);
     if (!retval) {
 	errno = ENOENT;
+	free(winpath);
 	return -1;
     }
 
@@ -726,11 +792,13 @@ static int priv_stat(const char *file_name, backend_statstruct *buf, int l_mode)
 	     */
 	    if (GetLastError() != ERROR_SHARING_VIOLATION) {
 		errno = ENAMETOOLONG;
+		free(winpath);
 		return -1;
 	    }
 	}
     }
 
+#if 0
     /* Hash st_ino, by splitting in two halves */
     namelen = wcslen(pathbuf);
     splitpoint = &pathbuf[namelen / 2];
@@ -741,6 +809,7 @@ static int priv_stat(const char *file_name, backend_statstruct *buf, int l_mode)
     buf->st_ino = buf->st_ino << 32;
     *splitpoint = savedchar;
     buf->st_ino |= wfnv1a_32(splitpoint);
+#endif
 
 #if 0
     fprintf(stderr,
@@ -782,11 +851,8 @@ int win_open(const char *pathname, int flags, ...)
     fd = _wopen(winpath, flags | O_BINARY, mode);
 
     if (fd != -1 && flags & O_CREAT) {
-	if (WSL_SetMode(winpath, mode | S_IFREG) == FALSE) {
-	    fprintf(stderr, "Can't set WSL mode!\n");
-	}
-	if (WSL_Chown(winpath, fake_euid, fake_egid) == FALSE) {
-	    fprintf(stderr, "Can't set WSL chown!\n");
+	if (!WSL_SetParameters(winpath, 0, mode | S_IFREG, fake_euid, fake_egid, -1)) {
+	    logmsg(LOG_ERR, "%s: Can't set WSL mode!", __func__);
 	}
     }
 
@@ -914,7 +980,7 @@ int win_readlink(const char *path, char *buf, size_t bufsiz)
 	return -1;
     }
 
-    target_size = ReadLinkW(winpath, target, sizeof(target), NULL);
+    target_size = WSL_ReadLinkW(winpath, target, sizeof(target), NULL);
 
     if (target_size > 0) {
 	for (unsigned int i = 0; i < (target_size / sizeof(wchar_t)); i++) {
@@ -956,12 +1022,8 @@ int win_mkdir(const char *pathname, mode_t mode)
     ret = _wmkdir(winpath);
 
     if (ret != -1) {
-	if (WSL_SetMode(winpath, mode | S_IFDIR) == FALSE) {
-	    fprintf(stderr, "Can't set WSL mode!\n");
-	}
-
-	if (WSL_Chown(winpath, fake_euid, fake_egid) == FALSE) {
-	    fprintf(stderr, "Can't set WSL chown!\n");
+	if (!WSL_SetParameters(winpath, 0, mode | S_IFDIR, fake_euid, fake_egid, -1)) {
+	    logmsg(LOG_ERR, "%s: Can't set WSL mode!", __func__);
 	}
     }
 
@@ -1017,9 +1079,15 @@ int win_symlink(const char *oldpath, const char *newpath)
 
     if (wcsncmp(can_tmppath, wexport_path, wcslen(wexport_path)) ||
 	(attr = GetFileAttributesW(tmppath)) == INVALID_FILE_ATTRIBUTES) {
-	ret = SymLinkW(winoldpath, winnewpath, SYMLINK_JUNCPOINT, oldpath);
+	ret = WSL_SymLinkW(winoldpath, winnewpath, SYMLINK_JUNCPOINT, oldpath);
     } else {
-	ret = SymLinkW(winoldpath, winnewpath, (attr & FILE_ATTRIBUTE_DIRECTORY)?SYMLINK_DIRECTORY:0, oldpath);
+	ret = WSL_SymLinkW(winoldpath, winnewpath, (attr & FILE_ATTRIBUTE_DIRECTORY)?SYMLINK_DIRECTORY:0, oldpath);
+    }
+
+    if (ret != -1) {
+	if (!WSL_SetParameters(winnewpath, 1, S_IFLNK | S_IRWXU | S_IRWXG | S_IRWXO, fake_euid, fake_egid, -1)) {
+	    logmsg(LOG_ERR, "%s: Cannot set WSL mode", __func__);
+	}
     }
 
     free(wexport_path);
@@ -1029,13 +1097,43 @@ int win_symlink(const char *oldpath, const char *newpath)
     return ret;
 }
 
-int win_mknod(U(const char *pathname), U(mode_t mode), U(dev_t dev))
+int win_mknod(const char *pathname, mode_t mode, dev_t dev)
 {
-    errno = ENOSYS;
-    return -1;
+    wchar_t *winpath;
+    int wsl_type;
+    int ret;
+
+    if (!strcmp("/", pathname)) {
+	/* Emulate root */
+	errno = EROFS;
+	return -1;
+    }
+
+    winpath = intpath2winpath(pathname);
+    if (!winpath) {
+	errno = EINVAL;
+	return -1;
+    }
+
+    if (mode & S_IFIFO) wsl_type = WSL_FIFO;
+    else if (mode & S_IFCHR) wsl_type = WSL_CHR;
+    else if (mode & S_IFBLK) wsl_type = WSL_BLK;
+    else wsl_type = 0;
+
+    ret = WSL_MakeSpecialFile(winpath, wsl_type);
+
+    if (ret != -1) {
+	if (WSL_SetParameters(winpath, 1, mode, fake_euid, fake_egid, dev) == FALSE) {
+	    logmsg(LOG_ERR, "%s: Can't set WSL mode!", __func__);
+	}
+    }
+
+    free(winpath);
+
+    return ret;
 }
 
-int win_mkfifo(const char *pathname, U(mode_t mode))
+int win_mkfifo(const char *pathname, mode_t mode)
 {
     wchar_t *winpath;
     int ret;
@@ -1052,15 +1150,11 @@ int win_mkfifo(const char *pathname, U(mode_t mode))
 	return -1;
     }
 
-//    if (WSL_SetMode(winpath, mode | S_IFIFO) == FALSE) {
-//	fprintf(stderr, "%s: Can't set WSL mode!\n", __func__);
-//    }
-
     ret = WSL_MakeSpecialFile(winpath, WSL_FIFO);
 
-//    if (WSL_setMode(winpath, mode) == FALSE) {
-//	fprintf(stderr, "%s: Can't set WSL mode!\n", __func__);
-//    }
+    if (WSL_SetParameters(winpath, 1, S_IFIFO | mode, fake_euid, fake_egid, -1) == FALSE) {
+	logmsg(LOG_ERR, "%s: Can't set WSL mode!", __func__);
+    }
 
     free(winpath);
 
@@ -1226,6 +1320,7 @@ int win_chmod(const char *path, mode_t mode)
 {
     wchar_t *winpath;
     int ret;
+    mode_t wsl_mode;
 
     if (!strcmp("/", path)) {
 	/* Emulate root */
@@ -1240,14 +1335,51 @@ int win_chmod(const char *path, mode_t mode)
     }
 
     DWORD attr = GetFileAttributesW(winpath);
+    if (attr == INVALID_FILE_ATTRIBUTES) {
+	errno = EACCES;
+	free(winpath);
+	return -1;
+    }
 
-    if ((attr != INVALID_FILE_ATTRIBUTES) && !(attr & FILE_ATTRIBUTE_REPARSE_POINT)) {
-	if (WSL_SetMode(winpath, mode | ((attr & FILE_ATTRIBUTE_DIRECTORY)?S_IFDIR:S_IFREG)) == FALSE) {
-	    fprintf(stderr, "Can't set WSL mode!\n");
+    int ext_info;
+    int noderef = (WSL_ReadLinkW(winpath, NULL, 0, &ext_info) == -1 && ext_info > WSL_LINK) ? 1 : 0;
+
+    if (!WSL_GetParameters(winpath, noderef, &wsl_mode, NULL, NULL, NULL, NULL, NULL)) {
+	switch (ext_info) {
+	case WSL_FIFO:
+	    wsl_mode = S_IFIFO |
+		       ((attr & FILE_ATTRIBUTE_READONLY)?0:S_IWUSR) |
+		       S_IRUSR | S_IXUSR | S_IRGRP | S_IROTH;
+	    break;
+	case WSL_CHR:
+	    wsl_mode = S_IFCHR |
+		       ((attr & FILE_ATTRIBUTE_READONLY)?0:S_IWUSR) |
+		       S_IRUSR | S_IXUSR | S_IRGRP | S_IROTH;
+	    break;
+	case WSL_BLK:
+	    wsl_mode = S_IFBLK |
+		       ((attr & FILE_ATTRIBUTE_READONLY)?0:S_IWUSR) |
+		       S_IRUSR | S_IXUSR | S_IRGRP | S_IROTH;
+	    break;
+	default:
+	    wsl_mode = ((attr & FILE_ATTRIBUTE_DIRECTORY)?S_IFDIR|S_IXGRP|S_IXOTH:S_IFREG) |
+		       ((attr & FILE_ATTRIBUTE_READONLY)?0:S_IWUSR) |
+		       S_IRUSR | S_IXUSR | S_IRGRP | S_IROTH;
+	    break;
 	}
     }
 
-    ret = _wchmod(winpath, mode);
+    if (!WSL_SetParameters(winpath, noderef, (wsl_mode & S_IFMT) | mode, -1, -1, -1)) {
+	logmsg(LOG_ERR, "%s: Can't set WSL mode!", __func__);
+	errno = EACCES;
+    } else {
+	ret = 0;
+    }
+
+    if (!noderef) {
+	ret = _wchmod(winpath, mode);
+    }
+
     free(winpath);
     return ret;
 }
@@ -1431,7 +1563,7 @@ int win_access(const char *path, int mode)
 	return -1;
     }
 
-    if (!WSL_GetMode(winpath, &f_mode)) {
+    if (!WSL_GetParameters(winpath, 0, &f_mode, NULL, NULL, NULL, NULL, NULL)) {
 	f_mode = (attr & FILE_ATTRIBUTE_DIRECTORY)?
 		(S_IRUSR | S_IXUSR | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH):
 		(S_IRUSR | S_IXUSR | S_IRGRP | S_IROTH);

@@ -197,7 +197,7 @@ post_op_attr get_post_buf(backend_statstruct buf, struct svc_req * req)
        dev_t is signed, such as 32-bit OS X. */
     result.post_op_attr_u.attributes.fsid &= 0xFFFFFFFF;
 
-#if defined(WIN32) || defined(AFS_SUPPORT)
+#ifdef AFS_SUPPORT
     /* Recent Linux kernels (2.6.24 and newer) expose large fileids even to
        non-LFS 32-bit applications, unless kernel parameter
        nfs.enable_ino64=0. This means that applications will fail with
