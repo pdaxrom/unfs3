@@ -382,7 +382,7 @@ static int priv_chown(wchar_t *path, int nodereference, uid_t owner, gid_t group
 {
     int ret = -1;
 
-    if (WSL_SetParameters(path, -1, nodereference, owner, group, -1)) {
+    if (WSL_SetParameters(path, nodereference, -1, owner, group, -1)) {
 	ret = 0;
     } else {
 	errno = EINVAL;
