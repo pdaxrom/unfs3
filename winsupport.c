@@ -557,7 +557,6 @@ static int priv_stat(const char *file_name, backend_statstruct *buf, int l_mode)
     size_t namelen;
     wchar_t *splitpoint;
     char savedchar;
-    struct _stati64 win_statbuf;
     unsigned long long fti;
     mode_t wsl_mode = 0;
     int wsl_extinfo;
@@ -598,11 +597,18 @@ static int priv_stat(const char *file_name, backend_statstruct *buf, int l_mode)
 	return -1;
     }
 
-    ret = _wstati64(winpath, &win_statbuf);
-    if (ret < 0) {
-	free(winpath);
-	return ret;
-    }
+
+
+	struct _stati64 win_statbuf;
+	ret = _wstati64(winpath, &win_statbuf);
+	if (ret < 0) {
+	    free(winpath);
+	    return ret;
+	}
+
+
+
+
 
     int ext_info;
     wchar_t target[PATH_MAX];
@@ -611,6 +617,8 @@ static int priv_stat(const char *file_name, backend_statstruct *buf, int l_mode)
     int noderef = (target_size == -1 && ext_info > WSL_LINK) ? 1 : 0;
 
     if (!WSL_GetParameters(winpath, noderef | l_mode, &wsl_mode, &wsl_owner, &wsl_group, &wsl_dev, NULL, NULL)) {
+	// fallback
+
 	wsl_mode = (win_statbuf.st_mode & ~(S_IRWXG | S_IRWXO)) |
 		   ((win_statbuf.st_mode & S_IFDIR)?(S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH):(S_IXUSR | S_IRGRP | S_IROTH));
 
@@ -628,6 +636,10 @@ static int priv_stat(const char *file_name, backend_statstruct *buf, int l_mode)
 	    wsl_mode = S_IFBLK | (wsl_mode & ~S_IFMT);
 	    break;
 	}
+
+//	wsl_owner = win_statbuf.st_uid;
+//	wsl_group = win_statbuf.st_gid;
+//	wsl_dev = win_statbuf.st_rdev;
     }
 
     buf->st_mode = wsl_mode;
@@ -635,79 +647,21 @@ static int priv_stat(const char *file_name, backend_statstruct *buf, int l_mode)
     if ((int) wsl_owner != -1) {
 	buf->st_uid = wsl_owner;
     } else {
-	buf->st_uid = win_statbuf.st_uid;
+	buf->st_uid = 0;
     }
 
     if ((int) wsl_group != -1) {
 	buf->st_gid = wsl_group;
     } else {
-	buf->st_gid = win_statbuf.st_gid;
+	buf->st_gid = 0;
     }
-
 
     if (wsl_dev != (dev_t)-1) {
 	buf->st_rdev = wsl_dev;
     } else {
-	buf->st_rdev = win_statbuf.st_rdev;
+	buf->st_rdev = 0;
     }
 
-
-    if (l_mode && target_size != -1) {
-	buf->st_size = WideCharToMultiByte(CP_UTF8, 0, target, target_size / sizeof(wchar_t), NULL, 0, NULL, NULL);
-    } else {
-	buf->st_size = win_statbuf.st_size;
-    }
-
-    buf->st_blocks = win_statbuf.st_size / 512;
-
-#if 0
-    /* Windows miscalculates DST sometimes in stat() calls, so we need
-       to use more standard Windows APIs. However CreateFile() cannot
-       open files we don't have access to (excluding GetFileTime()) and
-       GetFileAttributesEx() doesn't work on locked files. So that
-       leaves FindFile() which seems to work everywhere. We just need
-       to avoid wildcards (checked above). */
-
-    if (wcslen(winpath) == 3) {
-	WIN32_FILE_ATTRIBUTE_DATA fileinfo;
-
-	/* But just to make things interesting FindFile() doesn't work on
-	   root directories, so we have to use GetFileAttributesEx() here
-	   and pray there are no locking issues... */
-
-	retval = GetFileAttributesExW(winpath, GetFileExInfoStandard, &fileinfo);
-	if (!retval) {
-	    free(winpath);
-	    errno = EACCES;
-	    return -1;
-	}
-
-	fti = (unsigned long long)fileinfo.ftLastAccessTime.dwHighDateTime << 32 | fileinfo.ftLastAccessTime.dwLowDateTime;
-	buf->st_atime = fti / 10000000 - FT70SEC;
-	fti = (unsigned long long)fileinfo.ftLastWriteTime.dwHighDateTime << 32 | fileinfo.ftLastWriteTime.dwLowDateTime;
-	buf->st_mtime = fti / 10000000 - FT70SEC;
-	/* Windows doesn't have "change time", so use modification time */
-	buf->st_ctime = buf->st_mtime;
-    } else {
-	HANDLE h;
-	WIN32_FIND_DATAW finddata;
-
-	h = FindFirstFileW(winpath, &finddata);
-	if (h == INVALID_HANDLE_VALUE) {
-	    free(winpath);
-	    errno = EACCES;
-	    return -1;
-	}
-	FindClose(h);
-
-	fti = (unsigned long long)finddata.ftLastAccessTime.dwHighDateTime << 32 | finddata.ftLastAccessTime.dwLowDateTime;
-	buf->st_atime = fti / 10000000 - FT70SEC;
-	fti = (unsigned long long)finddata.ftLastWriteTime.dwHighDateTime << 32 | finddata.ftLastWriteTime.dwLowDateTime;
-	buf->st_mtime = fti / 10000000 - FT70SEC;
-	/* Windows doesn't have "change time", so use modification time */
-	buf->st_ctime = buf->st_mtime;
-    }
-#endif
 
 {
     BY_HANDLE_FILE_INFORMATION fileinfo;
@@ -734,9 +688,18 @@ static int priv_stat(const char *file_name, backend_statstruct *buf, int l_mode)
 	    buf->st_ctime = buf->st_mtime;
 
 	    buf->st_nlink = fileinfo.nNumberOfLinks; //win_statbuf.st_nlink;
+
+	if (l_mode && target_size != -1) {
+	    buf->st_size = WideCharToMultiByte(CP_UTF8, 0, target, target_size / sizeof(wchar_t), NULL, 0, NULL, NULL);
 	} else {
-	    logmsg(LOG_ERR, "%s: GetFileInformationByHandle()", __func__);
-	    wprintf(L">>>%s\n", winpath);
+	    buf->st_size = fileinfo.nFileSizeLow;
+	}
+
+	buf->st_blocks = buf->st_size / 512;
+
+	} else {
+	    //logmsg(LOG_ERR, "%s: GetFileInformationByHandle()", __func__);
+	    //wprintf(L">>>%s\n", winpath);
 	    errno = ENOENT;
 	    free(winpath);
 	    CloseHandle(hFile);
@@ -745,71 +708,15 @@ static int priv_stat(const char *file_name, backend_statstruct *buf, int l_mode)
 
 	CloseHandle(hFile);
     } else {
-	logmsg(LOG_ERR, "%s: GetFileInformationByHandle()", __func__);
-	wprintf(L">>>%s\n", winpath);
+	//logmsg(LOG_ERR, "%s: Cannot open file %s", __func__, file_name);
+	//wprintf(L">>>%s\n", winpath);
 	errno = ENOENT;
 	free(winpath);
 	return -1;
     }
 }
 
-    /*
-     * Windows doesn't update the modification time for directories
-     * on FAT, so mark it as invalid (0) and let upper layers deal
-     * with this by looking at the contents
-     */
-    if (S_ISDIR(buf->st_mode)) {
-	wchar_t rootpath[4];
-	wchar_t fsname[MAX_PATH+1];
-
-	wcsncpy(rootpath, winpath, 3);
-	rootpath[3] = L'\0';
-	retval = GetVolumeInformationW(rootpath, NULL, 0, NULL, NULL,
-	                               NULL, fsname, sizeof(fsname));
-	if (retval && (wcsstr(fsname, L"FAT") != NULL)) {
-	    buf->st_mtime = 0;
-	    buf->st_ctime = 0;
-	}
-    }
-
-    retval = GetFullPathNameW(winpath, wsizeof(pathbuf), pathbuf, NULL);
-    if (!retval) {
-	errno = ENOENT;
-	free(winpath);
-	return -1;
-    }
-
-    /* Set st_dev to the drive number */
-    buf->st_dev = tolower(pathbuf[0]) - 'a';
-
-    /* GetLongPathName fails if called with only x:\, and drive x is not
-       ready. So, only call it for other paths. */
-    if (pathbuf[0] && wcscmp(pathbuf + 1, L":\\")) {
-	retval = GetLongPathNameW(pathbuf, pathbuf, wsizeof(pathbuf));
-	if (!retval || (unsigned) retval > wsizeof(pathbuf)) {
-	    /* Strangely enough, GetLongPathName returns
-	       ERROR_SHARING_VIOLATION for locked files, such as hiberfil.sys 
-	     */
-	    if (GetLastError() != ERROR_SHARING_VIOLATION) {
-		errno = ENAMETOOLONG;
-		free(winpath);
-		return -1;
-	    }
-	}
-    }
-
-#if 0
-    /* Hash st_ino, by splitting in two halves */
-    namelen = wcslen(pathbuf);
-    splitpoint = &pathbuf[namelen / 2];
-    savedchar = *splitpoint;
-    *splitpoint = '\0';
-    buf->st_ino = wfnv1a_32(pathbuf);
-    assert(sizeof(buf->st_ino) == 8);
-    buf->st_ino = buf->st_ino << 32;
-    *splitpoint = savedchar;
-    buf->st_ino |= wfnv1a_32(splitpoint);
-#endif
+    buf->st_dev = tolower('C') - 'a';
 
 #if 0
     fprintf(stderr,
@@ -1472,13 +1379,22 @@ int win_rename(const char *oldpath, const char *newpath)
 	return -1;
     }
 
+    DWORD attr = GetFileAttributesW(newwinpath);
+    if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+	if (!DeleteFileW(newwinpath)) {
+	    errno = EACCES;
+	    goto out;
+	}
+    }
+
     if (!MoveFileW(oldwinpath, newwinpath)) {
+	logmsg(LOG_ERR, "%s: error %ld", __func__, GetLastError());
 	errno = EINVAL;
 	ret = -1;
     }
 
 //    ret = _wrename(oldwinpath, newwinpath);
-
+out:
     free(oldwinpath);
     free(newwinpath);
     return ret;

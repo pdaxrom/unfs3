@@ -396,9 +396,11 @@ static int fh_rec(const unfs3_fh_t * fh, int pos, const char *lead,
     entry = backend_readdir(search);
 
     while (entry) {
-	if (strlen(lead) + strlen(entry->d_name) + 1 < NFS_MAXPATHLEN) {
-
-	    sprintf(obj, "%s/%s", lead, entry->d_name);
+	int obj_length;
+	if ((obj_length = strlen(lead) + strlen(entry->d_name) + 1) < NFS_MAXPATHLEN) {
+	    memcpy(obj, lead, strlen(lead));
+	    obj[strlen(lead)] = '/';
+	    memcpy(obj + strlen(lead) + 1, entry->d_name, strlen(entry->d_name) + 1);
 
 	    res = backend_lstat(obj, &buf);
 	    if (res == -1) {
@@ -408,15 +410,14 @@ static int fh_rec(const unfs3_fh_t * fh, int pos, const char *lead,
 
 	    if (buf.st_dev == fh->dev && buf.st_ino == fh->ino) {
 		/* found the object */
-		sprintf(result, "%s/%s", lead + 1, entry->d_name);
+		memcpy(result, obj + 1, obj_length);
+
 		/* update stat cache */
 		fix_dir_times(result, &buf);
 		st_cache_valid = TRUE;
 		st_cache = buf;
 		matches++;
-#ifndef WIN32
 		break;
-#endif
 	    }
 
 	    if (strcmp(entry->d_name, "..") != 0 &&

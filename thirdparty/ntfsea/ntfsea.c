@@ -58,32 +58,22 @@ NtSetEaFile (
  *
  * \return Handle to the opened file pointer or NULL on failure.
  */
-HANDLE GetFileHandle(PWSTR DosFileName, BOOL Write, PFILE_FULL_EA_INFORMATION EaBuffer, ULONG EaLength)
+HANDLE GetFileHandle(PWSTR Path, BOOL Write, BOOL NoDereference)
 {
-	UNICODE_STRING FileName;
-	OBJECT_ATTRIBUTES ObjectAttributes;
-	ACCESS_MASK DesiredAccess = GENERIC_READ;
-	HANDLE FileHandle;
-	IO_STATUS_BLOCK IoStatusBlock;
+    HANDLE hFile = CreateFileW(Path,
+			       Write ? FILE_GENERIC_WRITE : FILE_GENERIC_READ,
+			       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+			       NULL,
+			       OPEN_EXISTING,
+			       FILE_FLAG_BACKUP_SEMANTICS | (NoDereference?FILE_FLAG_OPEN_REPARSE_POINT:0),
+			       NULL);
 
-	if (Write)
-	{
-		DesiredAccess |= GENERIC_WRITE;
-	}
+    if (hFile == INVALID_HANDLE_VALUE) {
+	fprintf(stderr, "Could not open file (error %ld)\n", GetLastError());
+	return NULL;
+    }
 
-	if (!RtlDosPathNameToNtPathName_U(DosFileName, &FileName, NULL, NULL))
-	{
-		return NULL;
-	}
-
-	InitializeObjectAttributes(&ObjectAttributes, &FileName, 0, NULL, NULL);
-
-	if (NtCreateFile(&FileHandle, DesiredAccess, &ObjectAttributes, &IoStatusBlock, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_OPEN_IF, 0, EaBuffer, EaLength))
-	{
-		return NULL;
-	}
-
-	return FileHandle;
+	return hFile;
 }
 
 /*!
@@ -103,7 +93,7 @@ DLL_EXPORT struct EaList* GetEaList(PWSTR FileName)
 	BOOLEAN RestartScan = TRUE;
 	struct EaList* Result = (struct EaList*)malloc(sizeof(struct EaList));
 
-	FileHandle = GetFileHandle(FileName, FALSE, NULL, 0);
+	FileHandle = GetFileHandle(FileName, FALSE, TRUE);
 	if (FileHandle == NULL)
 	{
 		return Result;
@@ -166,7 +156,7 @@ DLL_EXPORT struct Ea* GetEa(PWSTR FileName, PSTR EaName)
 	ULONG EaNameLength = strlen(EaName);
 	struct Ea* Result = (struct Ea*)malloc(sizeof(struct Ea));
 
-	FileHandle = GetFileHandle(FileName, FALSE, NULL, 0);
+	FileHandle = GetFileHandle(FileName, FALSE, TRUE);
 	if (FileHandle == NULL)
 	{
 		return Result;
@@ -220,7 +210,7 @@ DLL_EXPORT LONG32 WriteEa(PWSTR FileName, PSTR EaName, PSTR EaValue, ULONG32 EaV
 	PFILE_FULL_EA_INFORMATION EaBuffer = NULL;
 	ULONG EaLength = 0;
 
-	FileHandle = GetFileHandle(FileName, TRUE, EaBuffer, EaLength);
+	FileHandle = GetFileHandle(FileName, TRUE, TRUE);
 	if (FileHandle == NULL)
 	{
 		return -1;

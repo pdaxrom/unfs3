@@ -58,12 +58,14 @@ ssize_t WSL_ReadLinkW(const wchar_t *pathname, wchar_t *buf, size_t bufsiz, int 
 
     DWORD attr = GetFileAttributesW(pathname);
     if ((attr == INVALID_FILE_ATTRIBUTES) || !(attr & FILE_ATTRIBUTE_REPARSE_POINT)) {
+	errno = EINVAL;
 	return -1;
     }
 
     HANDLE hFile = WSL_OpenFileHandle(pathname, 0, 1);
     if (hFile == INVALID_HANDLE_VALUE) {
-	logmsg(LOG_ERR, "Could not open file (error %ld)", GetLastError());
+//	logmsg(LOG_ERR, "Could not open file (error %ld)", GetLastError());
+	errno = EACCES;
 	return -1;
     } else if (DeviceIoControl(hFile, FSCTL_GET_REPARSE_POINT, NULL, 0, rep_data, sizeof(rep_data), &get_size, NULL)) {
 	if (rep_data->ReparseTag == IO_REPARSE_TAG_SYMLINK) {
@@ -128,7 +130,7 @@ int WSL_SymLinkW(const wchar_t *target, const wchar_t *linkpath, uint32_t type, 
     if (type & SYMLINK_JUNCPOINT) {
 	HANDLE hFile = WSL_CreateFileHandle(linkpath);
 	if (hFile == INVALID_HANDLE_VALUE) {
-	    logmsg(LOG_ERR, "%s: Could not open file (error %ld)", __func__, GetLastError());
+//	    logmsg(LOG_ERR, "%s: Could not open file (error %ld)", __func__, GetLastError());
 	    errno = EACCES;
 	} else {
 	    DWORD returned_bytes;
@@ -145,7 +147,7 @@ int WSL_SymLinkW(const wchar_t *target, const wchar_t *linkpath, uint32_t type, 
 	    if (DeviceIoControl(hFile, FSCTL_SET_REPARSE_POINT, rep_data, rep_length, NULL, 0, &returned_bytes, NULL)) {
 		ret = 0;
 	    } else {
-		logmsg(LOG_ERR, "%s: DeviceIoControl (error %ld)", __func__, GetLastError());
+//		logmsg(LOG_ERR, "%s: DeviceIoControl (error %ld)", __func__, GetLastError());
 		errno = EIO;
 	    }
 
@@ -176,7 +178,7 @@ int WSL_MakeSpecialFile(const wchar_t *pathname, int type)
 
     HANDLE hFile = WSL_CreateFileHandle(pathname);
     if (hFile == INVALID_HANDLE_VALUE) {
-	logmsg(LOG_ERR, "%s: Could not open file (error %ld)", __func__, GetLastError());
+//	logmsg(LOG_ERR, "%s: Could not open file (error %ld)", __func__, GetLastError());
 	errno = EACCES;
     } else {
 	DWORD returned_bytes;
@@ -196,7 +198,7 @@ int WSL_MakeSpecialFile(const wchar_t *pathname, int type)
 	    if (DeviceIoControl(hFile, FSCTL_SET_REPARSE_POINT, rep_data, rep_length, NULL, 0, &returned_bytes, NULL)) {
 		ret = 0;
 	    } else {
-		logmsg(LOG_ERR, "%s: DeviceIoControl (error %ld)", __func__, GetLastError());
+//		logmsg(LOG_ERR, "%s: DeviceIoControl (error %ld)", __func__, GetLastError());
 		errno = EIO;
 	    }
 	}
@@ -323,7 +325,10 @@ static ULONG AddToEaBuffer(PFILE_FULL_EA_INFORMATION EaBuffer, PSTR EaName, PSTR
 	EaBuffer->EaValueLength = EaValueLength;
     }
     EaBuffer->Flags = 0;
-    return EaBuffer->EaNameLength + 1 + EaBuffer->EaValueLength;
+    EaBuffer->NextEntryOffset = EaBuffer->EaNameLength + 1 + EaBuffer->EaValueLength;
+    EaBuffer->NextEntryOffset += FIELD_OFFSET(FILE_FULL_EA_INFORMATION, EaName);
+    EaBuffer->NextEntryOffset = (EaBuffer->NextEntryOffset + 3) & ~3;
+    return EaBuffer->NextEntryOffset;
 }
 
 BOOL WSL_SetParameters(const wchar_t *pathname, int nodereference, mode_t mode, uid_t owner, uid_t group, dev_t dev)
@@ -343,37 +348,25 @@ BOOL WSL_SetParameters(const wchar_t *pathname, int nodereference, mode_t mode, 
 
     if ((int)owner != -1) {
 	DWORD val = owner;
-	EaBuffer->NextEntryOffset = AddToEaBuffer(EaBuffer, "$LXUID", (PSTR)&val, sizeof(val));
-	EaBuffer->NextEntryOffset += FIELD_OFFSET(FILE_FULL_EA_INFORMATION, EaName);
-	EaBuffer->NextEntryOffset = (EaBuffer->NextEntryOffset + 3) & ~3;
-	EaLength += EaBuffer->NextEntryOffset;
+	EaLength += AddToEaBuffer(EaBuffer, "$LXUID", (PSTR)&val, sizeof(val));
     }
 
     if ((int)group != -1) {
 	DWORD val = group;
 	EaBuffer = (PFILE_FULL_EA_INFORMATION)((PCHAR) EaBuffer + EaBuffer->NextEntryOffset);
-	EaBuffer->NextEntryOffset = AddToEaBuffer(EaBuffer, "$LXGID", (PSTR)&val, sizeof(val));
-	EaBuffer->NextEntryOffset += FIELD_OFFSET(FILE_FULL_EA_INFORMATION, EaName);
-	EaBuffer->NextEntryOffset = (EaBuffer->NextEntryOffset + 3) & ~3;
-	EaLength += EaBuffer->NextEntryOffset;
+	EaLength += AddToEaBuffer(EaBuffer, "$LXGID", (PSTR)&val, sizeof(val));
     }
 
     if (mode != (mode_t)-1) {
 	DWORD val = mode;
 	EaBuffer = (PFILE_FULL_EA_INFORMATION)((PCHAR) EaBuffer + EaBuffer->NextEntryOffset);
-	EaBuffer->NextEntryOffset = AddToEaBuffer(EaBuffer, "$LXMOD", (PSTR)&val, sizeof(val));
-	EaBuffer->NextEntryOffset += FIELD_OFFSET(FILE_FULL_EA_INFORMATION, EaName);
-	EaBuffer->NextEntryOffset = (EaBuffer->NextEntryOffset + 3) & ~3;
-	EaLength += EaBuffer->NextEntryOffset;
+	EaLength += AddToEaBuffer(EaBuffer, "$LXMOD", (PSTR)&val, sizeof(val));
     }
 
     if ((int)dev != -1) {
 	DWORD val[2] = { (dev >> 8) & 0xFF, dev & 0xFF };
 	EaBuffer = (PFILE_FULL_EA_INFORMATION)((PCHAR) EaBuffer + EaBuffer->NextEntryOffset);
-	EaBuffer->NextEntryOffset = AddToEaBuffer(EaBuffer, "$LXDEV", (PSTR)&val, sizeof(val));
-	EaBuffer->NextEntryOffset += FIELD_OFFSET(FILE_FULL_EA_INFORMATION, EaName);
-	EaBuffer->NextEntryOffset = (EaBuffer->NextEntryOffset + 3) & ~3;
-	EaLength += EaBuffer->NextEntryOffset;
+	EaLength += AddToEaBuffer(EaBuffer, "$LXDEV", (PSTR)&val, sizeof(val));
     }
 
     EaBuffer->NextEntryOffset = 0;
